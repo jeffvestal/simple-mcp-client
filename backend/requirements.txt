@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn==0.32.1
+pydantic==2.10.4
+httpx==0.28.1
+python-multipart==0.0.20
+google-generativeai==0.8.3
+boto3==1.35.80
+openai==1.58.1
