@@ -1,6 +1,7 @@
 # Simple MCP Client
 
 A full-stack chat application that connects to LLM providers and utilizes tools from MCP (Model Context Protocol) servers. Features a clean, modern interface with comprehensive tool execution and visualization capabilities.
+<img width="456" height="309" alt="simple-mcp-chat_robots_half_sized" src="https://github.com/user-attachments/assets/25d4dc1d-7cd8-459b-9620-96676038051f" />
 
 ## Current State
 
