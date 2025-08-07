@@ -38,7 +38,7 @@ This application is **fully functional** with the following working features:
 
 ## Quick Start
 
-### Automated Setup (Recommended)
+### 1. Automated Setup (Recommended)
 
 Run the setup script from the project root:
 
@@ -54,7 +54,36 @@ This script will:
 - Initialize the database
 - Provide clear instructions for starting the application
 
-### Manual Setup
+### 2. Easy Development Startup (Recommended)
+
+After setup, start both frontend and backend servers with a single command:
+
+```bash
+./start-dev.sh
+```
+
+This will:
+- Start the backend server on `http://localhost:8002`
+- Start the frontend server on `http://localhost:5173` (or next available port)
+- Log all output to `logs/backend.log` and `logs/frontend.log`
+- Handle graceful shutdown when you press Ctrl+C
+- Display real-time status and URLs
+
+To stop the servers:
+```bash
+./stop-dev.sh
+```
+
+**Monitor logs in real-time:**
+```bash
+# Backend logs
+tail -f logs/backend.log
+
+# Frontend logs  
+tail -f logs/frontend.log
+```
+
+### 3. Manual Setup
 
 If you prefer manual setup or need to troubleshoot:
 
@@ -244,6 +273,18 @@ frontend/
 ## Development
 
 ### Running Development Servers
+
+**Recommended - Use the consolidated scripts:**
+
+```bash
+# Start both servers
+./start-dev.sh
+
+# Stop both servers  
+./stop-dev.sh
+```
+
+**Manual approach:**
 
 1. **Backend Development**:
    ```bash
