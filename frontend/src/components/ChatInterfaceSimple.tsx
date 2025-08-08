@@ -8,6 +8,136 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collap
 import { useToast } from './ui/use-toast'
 import ReactMarkdown from 'react-markdown'
 
+// Helper function to extract and clean content from MCP tool responses
+function extractAndCleanToolContent(toolResult: any, toolName: string): string {
+  let mcpResult = null
+  
+  // Determine the correct structure to extract from
+  if (toolResult.result && toolResult.result.result) {
+    // Nested structure: API response -> MCP response -> MCP result
+    mcpResult = toolResult.result.result
+  } else if (toolResult.result) {
+    // Direct MCP response format
+    mcpResult = toolResult.result
+  } else {
+    // Alternative format
+    mcpResult = toolResult
+  }
+  
+  // Check if this is an error response - MCP errors are at the result level
+  if (toolResult.result && toolResult.result.error && toolResult.result.jsonrpc) {
+    // Direct MCP error response
+    const error = toolResult.result.error
+    return `Tool ${toolName} encountered an error: ${error.message || JSON.stringify(error)}`
+  } else if (mcpResult.error || (mcpResult.jsonrpc && mcpResult.error)) {
+    // Fallback for other error structures
+    const error = mcpResult.error || mcpResult
+    return `Tool ${toolName} encountered an error: ${error.message || JSON.stringify(error)}`
+  }
+  
+  // Extract raw text from MCP content if it exists
+  let rawTextContent = null
+  if (mcpResult.content && Array.isArray(mcpResult.content)) {
+    // Extract text from content array and try to parse as JSON
+    const textContent = mcpResult.content
+      .filter((item: any) => item.type === 'text')
+      .map((item: any) => item.text)
+      .join('\n')
+    
+    // Try to parse the text content as JSON (common with Elasticsearch MCP responses)
+    try {
+      const parsedContent = JSON.parse(textContent)
+      if (parsedContent.results && Array.isArray(parsedContent.results) && parsedContent.results[0]?.data) {
+        rawTextContent = parsedContent.results[0].data
+      } else {
+        rawTextContent = parsedContent
+      }
+    } catch {
+      rawTextContent = textContent
+    }
+  }
+  
+  // Use rawTextContent if available, otherwise use mcpResult for tool-specific formatting
+  const dataToProcess = rawTextContent || mcpResult
+  
+  // Tool-specific content extraction and formatting
+  if (toolName === 'list_indices' && dataToProcess.indices && Array.isArray(dataToProcess.indices)) {
+    // Clean up list_indices response
+    const indices = dataToProcess.indices
+    return `Found ${indices.length} Elasticsearch indices:\n\n${indices.map((index: any) => 
+      `• **${index.index}** (${index.status})\n  - Documents: ${index.docsCount || index['docs.count'] || 'N/A'}\n  - Size: ${index['store.size'] || 'N/A'}\n  - Health: ${index.health || 'N/A'}`
+    ).join('\n\n')}`
+  } else if (toolName.includes('search') && dataToProcess.hits) {
+    // Clean up search responses
+    const hits = dataToProcess.hits
+    if (hits.total && hits.total.value > 0) {
+      return `Found ${hits.total.value} results:\n\n${hits.hits.slice(0, 5).map((hit: any, idx: number) => 
+        `${idx + 1}. ${JSON.stringify(hit._source, null, 2)}`
+      ).join('\n\n')}${hits.hits.length > 5 ? '\n\n...(showing first 5 results)' : ''}`
+    } else {
+      return 'No results found for the search query.'
+    }
+  } else if (toolName.includes('mapping') && typeof dataToProcess === 'object' && !Array.isArray(dataToProcess)) {
+    // Clean up mapping responses
+    const mappings = dataToProcess
+    const indexNames = Object.keys(mappings)
+    if (indexNames.length > 0) {
+      return `Index mappings:\n\n${indexNames.map(indexName => {
+        const mapping = mappings[indexName]
+        if (mapping.mappings && mapping.mappings.properties) {
+          const fields = Object.keys(mapping.mappings.properties)
+          return `**${indexName}**:\n  Fields: ${fields.slice(0, 10).join(', ')}${fields.length > 10 ? '...' : ''}`
+        }
+        return `**${indexName}**: ${JSON.stringify(mapping).substring(0, 100)}...`
+      }).join('\n\n')}`
+    }
+  }
+  
+  // Generic content extraction for other tools
+  if (mcpResult.structuredContent && mcpResult.structuredContent.result) {
+    return mcpResult.structuredContent.result
+  } else if (rawTextContent && typeof rawTextContent === 'string') {
+    return rawTextContent
+  } else if (mcpResult.content && Array.isArray(mcpResult.content)) {
+    // Extract text from content array
+    return mcpResult.content
+      .filter((item: any) => item.type === 'text')
+      .map((item: any) => item.text)
+      .join('\n')
+  } else if (mcpResult.content && typeof mcpResult.content === 'string') {
+    return mcpResult.content
+  } else if (dataToProcess && typeof dataToProcess === 'object') {
+    // Handle data objects - try to format nicely
+    if (typeof dataToProcess === 'string') {
+      return dataToProcess
+    } else if (Array.isArray(dataToProcess)) {
+      return `Found ${dataToProcess.length} items:\n${dataToProcess.slice(0, 3).map((item: any, idx: number) => 
+        `${idx + 1}. ${typeof item === 'string' ? item : JSON.stringify(item, null, 2)}`
+      ).join('\n')}${dataToProcess.length > 3 ? '\n...(showing first 3 items)' : ''}`
+    } else {
+      // Object data - format key fields nicely
+      const obj = dataToProcess
+      const keys = Object.keys(obj)
+      if (keys.length <= 5) {
+        return Object.entries(obj).map(([key, value]) => 
+          `**${key}**: ${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}`
+        ).join('\n')
+      } else {
+        return `Data object with ${keys.length} properties:\n${keys.slice(0, 5).map(key => 
+          `• ${key}: ${typeof obj[key]}`
+        ).join('\n')}${keys.length > 5 ? '\n• ...(and more)' : ''}`
+      }
+    }
+  } else {
+    // Fallback to JSON string but try to make it more readable
+    const jsonStr = JSON.stringify(mcpResult, null, 2)
+    if (jsonStr.length > 500) {
+      return `${jsonStr.substring(0, 500)}...\n\n(Response truncated for readability)`
+    }
+    return jsonStr
+  }
+}
+
 interface ToolCallDisplayProps {
   toolCall: any
 }
@@ -86,11 +216,27 @@ export function ChatInterfaceSimple() {
 
     try {
       // Prepare conversation history (all messages except the last one)
-      const conversationHistory = messages.map(msg => ({
-        role: msg.role,
-        content: msg.content,
-        tool_calls: msg.tool_calls
-      }))
+      const conversationHistory = messages.map(msg => {
+        // Clean tool calls to remove internal execution data
+        let cleanedToolCalls = undefined
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          cleanedToolCalls = msg.tool_calls.map((tc: any) => ({
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.parameters || tc.arguments
+            // Remove: status, result, and other internal fields
+          }))
+        }
+        
+        return {
+          role: msg.role,
+          content: msg.content,
+          tool_calls: cleanedToolCalls,
+          tool_call_id: msg.tool_call_id // Preserve tool_call_id for tool messages
+        }
+      })
+
+      console.log('DEBUG: Cleaned conversation history for API call:', conversationHistory)
 
       // Send to backend
       const response = await api.chat({
@@ -202,37 +348,148 @@ export function ChatInterfaceSimple() {
           }
         }
         
-        // After all tools are executed, send results back to LLM for final response
-        if (allToolsCompleted) {
+        // After all tools are executed, process results and continue conversation
+        console.log('DEBUG: Tool execution summary - allToolsCompleted:', allToolsCompleted, 'toolCallsLength:', currentToolCalls.length)
+        
+        if (currentToolCalls.length > 0) {
           try {
-            // Filter tool calls that have actual results (not empty objects)
-            // Handle JSON-RPC response structure: tc.result.result.content
-            const completedToolCalls = currentToolCalls.filter(tc => {
-              console.log('DEBUG: Checking tool call:', tc.id, 'status:', tc.status, 'result keys:', tc.result ? Object.keys(tc.result) : 'no result')
-              if (tc.result && tc.result.result) {
-                console.log('DEBUG: Tool result.result keys:', Object.keys(tc.result.result))
+            // Filter tool calls that have actual successful results (exclude errors)
+            const successfulToolCalls = currentToolCalls.filter(tc => {
+              console.log('DEBUG: Checking tool call:', tc.id, 'status:', tc.status)
+              console.log('DEBUG: Tool result structure:', tc.result ? JSON.stringify(tc.result, null, 2) : 'no result')
+              
+              if (tc.status !== 'completed' || !tc.result) {
+                console.log('DEBUG: Tool not completed or no result')
+                return false
               }
               
-              return tc.status === 'completed' && 
-                     tc.result && 
-                     typeof tc.result === 'object' && 
-                     tc.result.result && 
-                     typeof tc.result.result === 'object' &&
-                     (tc.result.result.structuredContent || tc.result.result.content)
+              // Check if this is an error response - exclude error responses
+              if (tc.result && tc.result.error && tc.result.jsonrpc) {
+                console.log('DEBUG: Tool returned MCP error, excluding from LLM processing:', tc.result.error)
+                return false
+              }
+              
+              // Also check nested structures for other error formats
+              let mcpResult = null
+              if (tc.result.result && tc.result.result.result) {
+                mcpResult = tc.result.result.result
+              } else if (tc.result.result) {
+                mcpResult = tc.result.result
+              } else {
+                mcpResult = tc.result
+              }
+              
+              if (mcpResult.error || (mcpResult.jsonrpc && mcpResult.error)) {
+                console.log('DEBUG: Tool returned nested error, excluding from LLM processing:', mcpResult.error)
+                return false
+              }
+              
+              // Check if we have any usable content in the successful result
+              let hasContent = false
+              if (tc.result.result) {
+                const mcpResponseResult = tc.result.result
+                hasContent = !!(mcpResponseResult.content || mcpResponseResult.structuredContent || mcpResponseResult.result)
+              } else if (tc.result.content || tc.result.structuredContent) {
+                hasContent = true
+              } else {
+                hasContent = typeof tc.result === 'object' && Object.keys(tc.result).length > 0
+              }
+              
+              return hasContent
             })
             
-            console.log('DEBUG: Completed tool calls with results:', completedToolCalls)
+            console.log('DEBUG: Successful tool calls:', successfulToolCalls.length, 'out of', currentToolCalls.length, 'total')
             
-            // Only proceed if we have actual tool results
-            if (completedToolCalls.length === 0) {
-              console.log('DEBUG: No completed tool calls with results, skipping LLM follow-up')
+            // Process based on success/failure outcomes
+            if (successfulToolCalls.length === 0) {
+              // All tools failed - handle without tool messages to avoid OpenAI format violations
+              console.log('DEBUG: All tools failed - providing LLM response without tool results')
+              
+              // Clean conversation history and validate tool messages
+              const cleanConversationHistory = conversationHistory.map(msg => {
+                if (msg.role === 'assistant' && msg.tool_calls) {
+                  return {
+                    ...msg,
+                    tool_calls: msg.tool_calls.map((tc: any) => ({
+                      id: tc.id,
+                      name: tc.name,
+                      arguments: tc.parameters || tc.arguments
+                    }))
+                  }
+                } else if (msg.role === 'tool') {
+                  // Ensure tool messages have proper tool_call_id
+                  return {
+                    role: msg.role,
+                    content: msg.content,
+                    tool_call_id: msg.tool_call_id || 'unknown'
+                  }
+                }
+                return { role: msg.role, content: msg.content, tool_calls: msg.tool_calls }
+              }).filter(msg => {
+                // Remove tool messages without proper tool_call_id to prevent OpenAI errors
+                if (msg.role === 'tool' && (!msg.tool_call_id || msg.tool_call_id === 'unknown')) {
+                  console.log('DEBUG: Filtering out tool message without proper tool_call_id:', msg)
+                  return false
+                }
+                return true
+              })
+              
+              // Create conversation with failed tool calls but no tool messages
+              const conversationWithFailedTools = [
+                ...cleanConversationHistory,
+                {
+                  role: 'user' as const,
+                  content: userMessage,
+                  tool_calls: undefined
+                },
+                {
+                  role: 'assistant' as const,
+                  content: response.response || "I attempted to use tools to help with your request, but encountered technical difficulties. Let me provide what information I can based on my knowledge.",
+                  tool_calls: currentToolCalls.map(tc => ({
+                    id: tc.id,
+                    name: tc.name,
+                    arguments: tc.parameters
+                  }))
+                }
+              ]
+              
+              console.log('DEBUG: Sending conversation with failed tools (no tool messages):', conversationWithFailedTools.length, 'messages')
+              
+              // Send to LLM for response without tool results
+              const fallbackResponse = await api.chat({
+                message: "",
+                conversation_history: conversationWithFailedTools,
+                llm_config_id: activeLLMConfig.id
+              })
+              
+              addMessage({
+                role: 'assistant',
+                content: fallbackResponse.response,
+                tool_calls: []
+              })
+              
               return
+              
+            } else {
+              // Some or all tools succeeded - proceed with normal flow
+              console.log('DEBUG: Processing', successfulToolCalls.length, 'successful tool results')
+              
+              // Add successful tool messages to the store
+              for (const tc of successfulToolCalls) {
+                const cleanedContent = extractAndCleanToolContent(tc.result, tc.name)
+                console.log(`DEBUG: Adding tool message to store for ${tc.id}`)
+                
+                addMessage({
+                  role: 'tool',
+                  content: cleanedContent,
+                  tool_call_id: tc.id
+                })
+              }
             }
             
-            // Clean the conversation history by removing internal fields from tool calls
+            // For successful tools, build proper OpenAI conversation format
             const cleanConversationHistory = conversationHistory.map(msg => {
               if (msg.role === 'assistant' && msg.tool_calls) {
-                // Clean tool calls by removing internal fields
                 return {
                   ...msg,
                   tool_calls: msg.tool_calls.map((tc: any) => ({
@@ -242,15 +499,11 @@ export function ChatInterfaceSimple() {
                   }))
                 }
               }
-              return {
-                role: msg.role,
-                content: msg.content,
-                tool_calls: msg.tool_calls
-              }
+              return { role: msg.role, content: msg.content, tool_calls: msg.tool_calls }
             })
 
-            // Prepare conversation history including the assistant message with tool results
-            const conversationWithTools = [
+            // Build conversation with only successful tool results
+            const conversationWithSuccessfulTools = [
               ...cleanConversationHistory,
               {
                 role: 'user' as const,
@@ -260,50 +513,49 @@ export function ChatInterfaceSimple() {
               {
                 role: 'assistant' as const,
                 content: response.response,
-                tool_calls: completedToolCalls.map(tc => ({
+                tool_calls: successfulToolCalls.map(tc => ({
                   id: tc.id,
                   name: tc.name,
                   arguments: tc.parameters
                 }))
               },
-              // Add tool results as tool messages
-              ...completedToolCalls.map(tc => {
-                // Extract actual result content from the MCP JSON-RPC response
-                let resultContent = ''
-                const mcpResult = tc.result.result // Access the nested result
-                
-                if (mcpResult.structuredContent && mcpResult.structuredContent.result) {
-                  resultContent = mcpResult.structuredContent.result
-                } else if (mcpResult.content && Array.isArray(mcpResult.content)) {
-                  // Extract text from content array
-                  resultContent = mcpResult.content
-                    .filter((item: any) => item.type === 'text')
-                    .map((item: any) => item.text)
-                    .join('\n')
-                } else {
-                  resultContent = JSON.stringify(mcpResult)
-                }
-                
-                console.log('DEBUG: Extracted result content for', tc.id, ':', resultContent.substring(0, 100) + '...')
+              // Add only successful tool results as tool messages
+              ...successfulToolCalls.map(tc => {
+                const cleanedContent = extractAndCleanToolContent(tc.result, tc.name)
+                console.log('DEBUG: Final extracted result content for', tc.id, ':', cleanedContent.substring(0, 200) + '...')
                 
                 return {
                   role: 'tool' as const,
-                  content: resultContent,
+                  content: cleanedContent,
                   tool_call_id: tc.id
                 }
               })
             ]
             
-            console.log('DEBUG: Conversation being sent to backend:', conversationWithTools)
+            console.log('DEBUG: Conversation being sent to backend:', conversationWithSuccessfulTools.length, 'messages')
+            console.log('DEBUG: Tool messages in conversation:', successfulToolCalls.length)
+            
+            // Debug: Check all messages for tool_call_id issues
+            conversationWithSuccessfulTools.forEach((msg, idx) => {
+              console.log(`DEBUG: Message ${idx}:`, {
+                role: msg.role,
+                content: msg.content ? msg.content.substring(0, 50) + '...' : 'no content',
+                tool_calls: msg.tool_calls ? msg.tool_calls.length : 'none',
+                tool_call_id: msg.tool_call_id || 'none'
+              })
+              
+              if (msg.role === 'tool' && !msg.tool_call_id) {
+                console.error('FOUND TOOL MESSAGE WITHOUT tool_call_id:', msg)
+              }
+            })
 
             // Send to LLM for final response
             const finalResponse = await api.chat({
-              message: "", // Empty message since we're continuing the conversation
-              conversation_history: conversationWithTools,
+              message: "",
+              conversation_history: conversationWithSuccessfulTools,
               llm_config_id: activeLLMConfig.id
             })
 
-            // Add the final LLM response
             addMessage({
               role: 'assistant',
               content: finalResponse.response,
@@ -365,7 +617,7 @@ export function ChatInterfaceSimple() {
               </p>
             </div>
           ) : (
-            messages.map((message, index) => (
+            messages.filter(message => message.role !== 'tool').map((message, index) => (
               <div key={index} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={`max-w-[80%] p-3 rounded-lg ${
                   message.role === 'user' 
