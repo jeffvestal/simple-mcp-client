@@ -236,7 +236,6 @@ export function ChatInterfaceSimple() {
         }
       })
 
-      console.log('DEBUG: Cleaned conversation history for API call:', conversationHistory)
 
       // Send to backend
       const response = await api.chat({
@@ -267,53 +266,79 @@ export function ChatInterfaceSimple() {
         let allToolsCompleted = true
         let currentToolCalls = [...toolCalls] // Track updated tool calls
         
-        // Process tool calls sequentially
-        for (const toolCall of toolCalls) {
-          try {
-            // Find the server that has this tool
-            const servers = await api.getMCPServers()
-            let targetServerId = null
-            for (const server of servers) {
-              const serverDetails = await api.getMCPServerWithTools(server.id)
-              if (serverDetails.tools.some((tool: any) => tool.name === toolCall.name && tool.is_enabled)) {
-                targetServerId = server.id
-                break
+        try {
+          // Process tool calls sequentially
+          for (const toolCall of toolCalls) {
+            try {
+              // Find the server that has this tool
+              const servers = await api.getMCPServers()
+              let targetServerId = null
+              for (const server of servers) {
+                const serverDetails = await api.getMCPServerWithTools(server.id)
+                if (serverDetails.tools.some((tool: any) => tool.name === toolCall.name && tool.is_enabled)) {
+                  targetServerId = server.id
+                  break
+                }
               }
-            }
 
-            if (targetServerId) {
-              const toolResult = await api.callTool({
-                tool_name: toolCall.name,
-                parameters: toolCall.parameters,
-                server_id: targetServerId
-              })
+              if (targetServerId) {
+                const toolResult = await api.callTool({
+                  tool_name: toolCall.name,
+                  parameters: toolCall.parameters,
+                  server_id: targetServerId
+                })
 
-              // Update tool call status in both arrays
-              const updatedToolCalls = currentToolCalls.map(tc => 
-                tc.id === toolCall.id 
-                  ? { 
-                      ...tc, 
-                      status: toolResult.success ? 'completed' as const : 'error' as const,
-                      result: toolResult.success ? toolResult.result : toolResult.error
-                    }
-                  : tc
-              )
-              
-              currentToolCalls = updatedToolCalls // Update our tracking array
-              updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
-              
-              // If tool failed, mark as not all completed
-              if (!toolResult.success) {
+                // Update tool call status in both arrays
+                const updatedToolCalls = currentToolCalls.map(tc => 
+                  tc.id === toolCall.id 
+                    ? { 
+                        ...tc, 
+                        status: toolResult.success ? 'completed' as const : 'error' as const,
+                        result: toolResult.success ? toolResult.result : toolResult.error
+                      }
+                    : tc
+                )
+                
+                // Log tool execution result
+                if (toolResult.success) {
+                  console.log(`✅ Tool ${toolCall.name} completed successfully`)
+                } else {
+                  console.log(`❌ Tool ${toolCall.name} failed: ${toolResult.error}`)
+                }
+                
+                currentToolCalls = updatedToolCalls // Update our tracking array
+                updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
+                
+                // If tool failed, mark as not all completed
+                if (!toolResult.success) {
+                  allToolsCompleted = false
+                }
+              } else {
+                // Tool not found - update status
+                const updatedToolCalls = currentToolCalls.map(tc => 
+                  tc.id === toolCall.id 
+                    ? { 
+                        ...tc, 
+                        status: 'error' as const,
+                        result: 'Tool not found or disabled'
+                      }
+                    : tc
+                )
+                
+                currentToolCalls = updatedToolCalls // Update our tracking array
+                updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
                 allToolsCompleted = false
               }
-            } else {
-              // Tool not found - update status
+            } catch (error) {
+              console.error('ERROR: Individual tool execution failed:', error)
+              
+              // Update tool call with error status
               const updatedToolCalls = currentToolCalls.map(tc => 
                 tc.id === toolCall.id 
                   ? { 
                       ...tc, 
                       status: 'error' as const,
-                      result: 'Tool not found or disabled'
+                      result: error instanceof Error ? error.message : 'Unknown error'
                     }
                   : tc
               )
@@ -321,51 +346,43 @@ export function ChatInterfaceSimple() {
               currentToolCalls = updatedToolCalls // Update our tracking array
               updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
               allToolsCompleted = false
+              
+              toast({
+                title: "Tool Error",
+                description: `${toolCall.name} failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                variant: "destructive",
+              })
             }
-          } catch (error) {
-            console.error('Tool execution error:', error)
-            
-            // Update tool call with error status
-            const updatedToolCalls = currentToolCalls.map(tc => 
-              tc.id === toolCall.id 
-                ? { 
-                    ...tc, 
-                    status: 'error' as const,
-                    result: error instanceof Error ? error.message : 'Unknown error'
-                  }
-                : tc
-            )
-            
-            currentToolCalls = updatedToolCalls // Update our tracking array
-            updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
-            allToolsCompleted = false
-            
-            toast({
-              title: "Tool Execution Error",
-              description: `Failed to execute ${toolCall.name}`,
-              variant: "destructive",
-            })
           }
+        } catch (error) {
+          console.error('ERROR: Critical failure in tool execution loop:', error)
+          
+          // Mark all remaining tools as failed
+          currentToolCalls = currentToolCalls.map(tc => 
+            tc.status === 'pending' ? { ...tc, status: 'error' as const, result: 'Tool execution interrupted' } : tc
+          )
+          updateMessage(assistantMessageId, { tool_calls: currentToolCalls })
+          allToolsCompleted = false
+          
+          toast({
+            title: "Tool Execution Error",
+            description: "Critical failure during tool processing",
+            variant: "destructive",
+          })
         }
         
         // After all tools are executed, process results and continue conversation
-        console.log('DEBUG: Tool execution summary - allToolsCompleted:', allToolsCompleted, 'toolCallsLength:', currentToolCalls.length)
         
         if (currentToolCalls.length > 0) {
           try {
             // Filter tool calls that have actual successful results (exclude errors)
             const successfulToolCalls = currentToolCalls.filter(tc => {
-              console.log('DEBUG: Checking tool call:', tc.id, 'status:', tc.status)
-              console.log('DEBUG: Tool result structure:', tc.result ? JSON.stringify(tc.result, null, 2) : 'no result')
-              
               if (tc.status !== 'completed' || !tc.result) {
-                console.log('DEBUG: Tool not completed or no result')
                 return false
               }
               
               // Check if this is an error response - exclude error responses
               if (tc.result && tc.result.error && tc.result.jsonrpc) {
-                console.log('DEBUG: Tool returned MCP error, excluding from LLM processing:', tc.result.error)
                 return false
               }
               
@@ -380,7 +397,6 @@ export function ChatInterfaceSimple() {
               }
               
               if (mcpResult.error || (mcpResult.jsonrpc && mcpResult.error)) {
-                console.log('DEBUG: Tool returned nested error, excluding from LLM processing:', mcpResult.error)
                 return false
               }
               
@@ -398,174 +414,260 @@ export function ChatInterfaceSimple() {
               return hasContent
             })
             
-            console.log('DEBUG: Successful tool calls:', successfulToolCalls.length, 'out of', currentToolCalls.length, 'total')
-            
             // Process based on success/failure outcomes
             if (successfulToolCalls.length === 0) {
-              // All tools failed - handle without tool messages to avoid OpenAI format violations
-              console.log('DEBUG: All tools failed - providing LLM response without tool results')
+              // All tools failed - provide user-friendly error message
+              console.log('ERROR: All tools failed. Tool errors:', currentToolCalls.map(tc => ({
+                name: tc.name, 
+                status: tc.status, 
+                error: tc.result
+              })))
               
-              // Clean conversation history and validate tool messages
-              const cleanConversationHistory = conversationHistory.map(msg => {
-                if (msg.role === 'assistant' && msg.tool_calls) {
-                  return {
-                    ...msg,
-                    tool_calls: msg.tool_calls.map((tc: any) => ({
-                      id: tc.id,
-                      name: tc.name,
-                      arguments: tc.parameters || tc.arguments
-                    }))
-                  }
-                } else if (msg.role === 'tool') {
-                  // Ensure tool messages have proper tool_call_id
-                  return {
-                    role: msg.role,
-                    content: msg.content,
-                    tool_call_id: msg.tool_call_id || 'unknown'
-                  }
-                }
-                return { role: msg.role, content: msg.content, tool_calls: msg.tool_calls }
-              }).filter(msg => {
-                // Remove tool messages without proper tool_call_id to prevent OpenAI errors
-                if (msg.role === 'tool' && (!msg.tool_call_id || msg.tool_call_id === 'unknown')) {
-                  console.log('DEBUG: Filtering out tool message without proper tool_call_id:', msg)
-                  return false
-                }
-                return true
-              })
-              
-              // Create conversation with failed tool calls but no tool messages
-              const conversationWithFailedTools = [
-                ...cleanConversationHistory,
-                {
-                  role: 'user' as const,
-                  content: userMessage,
-                  tool_calls: undefined
-                },
-                {
-                  role: 'assistant' as const,
-                  content: response.response || "I attempted to use tools to help with your request, but encountered technical difficulties. Let me provide what information I can based on my knowledge.",
-                  tool_calls: currentToolCalls.map(tc => ({
-                    id: tc.id,
-                    name: tc.name,
-                    arguments: tc.parameters
-                  }))
-                }
-              ]
-              
-              console.log('DEBUG: Sending conversation with failed tools (no tool messages):', conversationWithFailedTools.length, 'messages')
-              
-              // Send to LLM for response without tool results
-              const fallbackResponse = await api.chat({
-                message: "",
-                conversation_history: conversationWithFailedTools,
-                llm_config_id: activeLLMConfig.id
-              })
-              
-              addMessage({
-                role: 'assistant',
-                content: fallbackResponse.response,
-                tool_calls: []
-              })
+              try {
+                addMessage({
+                  role: 'assistant',
+                  content: "I encountered some technical difficulties while trying to access the tools to help with your request. Please try asking your question again, or let me know if you'd like me to help in a different way.",
+                  tool_calls: []
+                })
+              } catch (error) {
+                console.error('ERROR: Failed to add error message:', error)
+                toast({
+                  title: "Critical Error",
+                  description: "Unable to process your request. Please refresh the page and try again.",
+                  variant: "destructive",
+                })
+              }
               
               return
               
             } else {
               // Some or all tools succeeded - proceed with normal flow
-              console.log('DEBUG: Processing', successfulToolCalls.length, 'successful tool results')
               
-              // Add successful tool messages to the store
-              for (const tc of successfulToolCalls) {
-                const cleanedContent = extractAndCleanToolContent(tc.result, tc.name)
-                console.log(`DEBUG: Adding tool message to store for ${tc.id}`)
+              try {
+                // Add successful tool messages to the store  
+                console.log('📝 Adding', successfulToolCalls.length, 'tool messages to store...')
+                for (const tc of successfulToolCalls) {
+                  const cleanedContent = extractAndCleanToolContent(tc.result, tc.name)
+                  
+                  const toolMessageId = addMessage({
+                    role: 'tool',
+                    content: cleanedContent,
+                    tool_call_id: tc.id
+                  })
+                  console.log(`📝 Added tool message ${tc.name} with ID:`, toolMessageId)
+                  
+                  // Small delay to prevent ID collisions
+                  await new Promise(resolve => setTimeout(resolve, 1))
+                }
                 
-                addMessage({
-                  role: 'tool',
-                  content: cleanedContent,
-                  tool_call_id: tc.id
+                // Build proper OpenAI conversation format for LLM processing
+                const cleanConversationHistory = conversationHistory.map(msg => {
+                  if (msg.role === 'assistant' && msg.tool_calls) {
+                    return {
+                      ...msg,
+                      tool_calls: msg.tool_calls.map((tc: any) => ({
+                        id: tc.id,
+                        name: tc.name,
+                        arguments: tc.parameters || tc.arguments
+                      }))
+                    }
+                  } else if (msg.role === 'tool') {
+                    // Ensure tool messages have proper tool_call_id
+                    return {
+                      role: msg.role,
+                      content: msg.content,
+                      tool_call_id: msg.tool_call_id || 'unknown'
+                    }
+                  }
+                  return { role: msg.role, content: msg.content, tool_calls: msg.tool_calls }
+                }).filter(msg => {
+                  // Remove tool messages without proper tool_call_id to prevent OpenAI errors
+                  if (msg.role === 'tool' && (!msg.tool_call_id || msg.tool_call_id === 'unknown')) {
+                    return false
+                  }
+                  return true
+                })
+
+                // Build conversation with only successful tool results
+                const conversationWithSuccessfulTools = [
+                  ...cleanConversationHistory,
+                  {
+                    role: 'user' as const,
+                    content: userMessage,
+                    tool_calls: undefined
+                  },
+                  {
+                    role: 'assistant' as const,
+                    content: response.response,
+                    tool_calls: successfulToolCalls.map(tc => ({
+                      id: tc.id,
+                      name: tc.name,
+                      arguments: tc.parameters
+                    }))
+                  },
+                  // Add only successful tool results as tool messages
+                  ...successfulToolCalls.map(tc => {
+                    const cleanedContent = extractAndCleanToolContent(tc.result, tc.name)
+                    
+                    return {
+                      role: 'tool' as const,
+                      content: cleanedContent,
+                      tool_call_id: tc.id
+                    }
+                  }),
+                  // Add a system message to guide the LLM to provide a final answer
+                  {
+                    role: 'user' as const,
+                    content: "Based on the tool results above, please provide a complete answer to my original question."
+                  }
+                ]
+                
+                // Send to LLM for final response
+                console.log('🔄 Starting final LLM processing with', conversationWithSuccessfulTools.length, 'messages')
+                console.log('📤 Making final API call to LLM...')
+                
+                let finalResponse
+                let apiCallAttempts = 0
+                const maxAttempts = 2
+                
+                while (apiCallAttempts < maxAttempts) {
+                  try {
+                    apiCallAttempts++
+                    console.log(`📤 API call attempt ${apiCallAttempts}/${maxAttempts}`)
+                    
+                    finalResponse = await api.chat({
+                      message: "",
+                      conversation_history: conversationWithSuccessfulTools,
+                      llm_config_id: activeLLMConfig.id,
+                      exclude_tools: true  // CRITICAL: Prevent LLM from making more tool calls
+                    })
+                    
+                    console.log('📥 Final LLM response received:', {
+                      hasResponse: !!finalResponse.response,
+                      responseLength: finalResponse.response?.length || 0,
+                      responsePreview: finalResponse.response?.substring(0, 100) + '...',
+                      hasToolCalls: !!finalResponse.tool_calls?.length,
+                      fullResponse: finalResponse
+                    })
+                    
+                    // Check if LLM incorrectly returned tool calls in final response
+                    if (finalResponse.tool_calls && finalResponse.tool_calls.length > 0) {
+                      console.error('❌ CRITICAL: LLM returned tool calls in final response despite exclude_tools=true!')
+                      console.error('❌ Tool calls returned:', finalResponse.tool_calls)
+                      
+                      // Force a response without tool calls
+                      finalResponse.tool_calls = []
+                      if (!finalResponse.response || finalResponse.response.trim() === '') {
+                        finalResponse.response = "I've gathered the information you requested using tools, but I'm having difficulty generating a final response. The tool results should be visible above."
+                      }
+                    }
+                    
+                    // Break out of retry loop if successful
+                    break
+                    
+                  } catch (apiError) {
+                    console.error(`❌ API call attempt ${apiCallAttempts} failed:`, apiError)
+                    
+                    if (apiCallAttempts >= maxAttempts) {
+                      throw apiError // Re-throw after max attempts
+                    }
+                    
+                    // Wait before retry
+                    await new Promise(resolve => setTimeout(resolve, 1000))
+                  }
+                }
+
+                console.log('💬 Adding final assistant message to UI...')
+                try {
+                  const finalMessageResult = addMessage({
+                    role: 'assistant',
+                    content: finalResponse.response || "I was able to gather the information using tools, but I'm having trouble generating a response. Please try asking your question again.",
+                    tool_calls: []
+                  })
+                  console.log('✅ Final message added successfully:', finalMessageResult)
+                } catch (addMessageError) {
+                  console.error('❌ CRITICAL: Failed to add final message to UI:', addMessageError)
+                  toast({
+                    title: "Message Display Error",
+                    description: "Got a response but couldn't display it. Please try again.",
+                    variant: "destructive",
+                  })
+                  // Try to add a simple fallback message
+                  try {
+                    addMessage({
+                      role: 'assistant',
+                      content: "I processed your request but encountered a display issue. Please try your question again.",
+                      tool_calls: []
+                    })
+                  } catch (fallbackError) {
+                    console.error('❌ CRITICAL: Even fallback message failed:', fallbackError)
+                  }
+                }
+                
+              } catch (error) {
+                console.error('❌ CRITICAL: Failed to process successful tool results:', error)
+                console.error('❌ Error details:', {
+                  errorType: error.constructor.name,
+                  errorMessage: error.message,
+                  errorStack: error.stack
+                })
+                
+                // Determine appropriate fallback message based on error type
+                let fallbackMessage = "I was able to gather some information using tools, but encountered an issue processing the results. Please try your request again."
+                
+                if (error.message?.includes('fetch') || error.message?.includes('network')) {
+                  fallbackMessage = "I gathered information using tools, but had a network issue getting the final response. Please try your question again."
+                } else if (error.message?.includes('timeout')) {
+                  fallbackMessage = "I gathered information using tools, but the response took too long to generate. Please try a simpler version of your question."
+                } else if (error.message?.includes('parse') || error.message?.includes('JSON')) {
+                  fallbackMessage = "I gathered information using tools, but encountered a data formatting issue. Please try rephrasing your question."
+                }
+                
+                try {
+                  addMessage({
+                    role: 'assistant',
+                    content: fallbackMessage,
+                    tool_calls: []
+                  })
+                } catch (addError) {
+                  console.error('❌ CRITICAL: Failed to add fallback message:', addError)
+                  toast({
+                    title: "Critical Error",
+                    description: "Unable to display response. Please refresh and try again.",
+                    variant: "destructive",
+                  })
+                }
+                
+                toast({
+                  title: "Processing Error",
+                  description: "Failed to process tool results",
+                  variant: "destructive",
                 })
               }
             }
             
-            // For successful tools, build proper OpenAI conversation format
-            const cleanConversationHistory = conversationHistory.map(msg => {
-              if (msg.role === 'assistant' && msg.tool_calls) {
-                return {
-                  ...msg,
-                  tool_calls: msg.tool_calls.map((tc: any) => ({
-                    id: tc.id,
-                    name: tc.name,
-                    arguments: tc.parameters || tc.arguments
-                  }))
-                }
-              }
-              return { role: msg.role, content: msg.content, tool_calls: msg.tool_calls }
-            })
-
-            // Build conversation with only successful tool results
-            const conversationWithSuccessfulTools = [
-              ...cleanConversationHistory,
-              {
-                role: 'user' as const,
-                content: userMessage,
-                tool_calls: undefined
-              },
-              {
-                role: 'assistant' as const,
-                content: response.response,
-                tool_calls: successfulToolCalls.map(tc => ({
-                  id: tc.id,
-                  name: tc.name,
-                  arguments: tc.parameters
-                }))
-              },
-              // Add only successful tool results as tool messages
-              ...successfulToolCalls.map(tc => {
-                const cleanedContent = extractAndCleanToolContent(tc.result, tc.name)
-                console.log('DEBUG: Final extracted result content for', tc.id, ':', cleanedContent.substring(0, 200) + '...')
-                
-                return {
-                  role: 'tool' as const,
-                  content: cleanedContent,
-                  tool_call_id: tc.id
-                }
-              })
-            ]
-            
-            console.log('DEBUG: Conversation being sent to backend:', conversationWithSuccessfulTools.length, 'messages')
-            console.log('DEBUG: Tool messages in conversation:', successfulToolCalls.length)
-            
-            // Debug: Check all messages for tool_call_id issues
-            conversationWithSuccessfulTools.forEach((msg, idx) => {
-              console.log(`DEBUG: Message ${idx}:`, {
-                role: msg.role,
-                content: msg.content ? msg.content.substring(0, 50) + '...' : 'no content',
-                tool_calls: msg.tool_calls ? msg.tool_calls.length : 'none',
-                tool_call_id: msg.tool_call_id || 'none'
-              })
-              
-              if (msg.role === 'tool' && !msg.tool_call_id) {
-                console.error('FOUND TOOL MESSAGE WITHOUT tool_call_id:', msg)
-              }
-            })
-
-            // Send to LLM for final response
-            const finalResponse = await api.chat({
-              message: "",
-              conversation_history: conversationWithSuccessfulTools,
-              llm_config_id: activeLLMConfig.id
-            })
-
-            addMessage({
-              role: 'assistant',
-              content: finalResponse.response,
-              tool_calls: []
-            })
           } catch (error) {
-            console.error('Error getting final LLM response:', error)
+            console.error('ERROR: Critical failure in tool result processing:', error)
+            
+            // Provide user-friendly fallback message
+            try {
+              addMessage({
+                role: 'assistant',
+                content: "I encountered unexpected difficulties while processing your request. Please try again, and if the problem persists, try rephrasing your question.",
+                tool_calls: []
+              })
+            } catch (addError) {
+              console.error('ERROR: Failed to add fallback message:', addError)
+              toast({
+                title: "Critical Error",
+                description: "Unable to process your request. Please refresh the page and try again.",
+                variant: "destructive",
+              })
+            }
+            
             toast({
-              title: "Response Error",
-              description: "Failed to get final response from LLM",
+              title: "Processing Error",
+              description: "Unexpected error in tool processing",
               variant: "destructive",
             })
           }
@@ -573,7 +675,19 @@ export function ChatInterfaceSimple() {
       }
 
     } catch (error) {
-      console.error('Chat error:', error)
+      console.error('ERROR: Critical chat system failure:', error)
+      
+      // Provide user-friendly error message
+      try {
+        addMessage({
+          role: 'assistant',
+          content: "I'm sorry, but I encountered a technical issue while processing your message. Please try again, and if the problem continues, try refreshing the page.",
+          tool_calls: []
+        })
+      } catch (addError) {
+        console.error('ERROR: Failed to add error message to chat:', addError)
+      }
+      
       toast({
         title: "Chat Error",
         description: error instanceof Error ? error.message : "Failed to send message",

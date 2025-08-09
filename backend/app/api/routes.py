@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from ..core.database import Database
 from ..models.schemas import (
     LLMConfigCreate, LLMConfig, MCPServerCreate, MCPServer, MCPServerWithTools,
@@ -8,6 +8,7 @@ from ..models.schemas import (
 from ..services.mcp_client import mcp_client
 from ..services.llm_service import LLMService
 from ..services.local_mcp_manager import local_mcp_manager
+from ..services.mcp_parameter_corrector import mcp_parameter_corrector
 
 router = APIRouter()
 
@@ -338,31 +339,35 @@ async def chat(request: ChatRequest, db: Database = Depends(get_db)):
             base_url=config["url"]
         )
         
-        # Get available tools from enabled MCP servers
+        # Get available tools from enabled MCP servers (unless excluded for final responses)
         available_tools = []
-        servers = db.get_mcp_servers()
-        for server in servers:
-            if server["is_enabled"] and server["status"] == "connected":
-                tools = db.get_server_tools(server["id"])
-                for tool in tools:
-                    if tool["is_enabled"]:
-                        # Parse stored schema or use default
-                        try:
-                            import json
-                            schema = json.loads(tool.get("schema", "{}"))
-                            if not schema or not isinstance(schema, dict):
+        if not request.exclude_tools:
+            print(f"[DEBUG] Including tools in LLM request")
+            servers = db.get_mcp_servers()
+            for server in servers:
+                if server["is_enabled"] and server["status"] == "connected":
+                    tools = db.get_server_tools(server["id"])
+                    for tool in tools:
+                        if tool["is_enabled"]:
+                            # Parse stored schema or use default
+                            try:
+                                import json
+                                schema = json.loads(tool.get("schema", "{}"))
+                                if not schema or not isinstance(schema, dict):
+                                    schema = {"type": "object", "properties": {}}
+                            except:
                                 schema = {"type": "object", "properties": {}}
-                        except:
-                            schema = {"type": "object", "properties": {}}
-                        
-                        available_tools.append({
-                            "type": "function",
-                            "function": {
-                                "name": tool["name"],
-                                "description": tool.get("description", ""),
-                                "parameters": schema
-                            }
-                        })
+                            
+                            available_tools.append({
+                                "type": "function",
+                                "function": {
+                                    "name": tool["name"],
+                                    "description": tool.get("description", ""),
+                                    "parameters": schema
+                                }
+                            })
+        else:
+            print(f"[DEBUG] Excluding tools from LLM request (final response mode)")
         
         # Generate response
         # Convert conversation history to ChatMessage objects
@@ -387,14 +392,24 @@ async def chat(request: ChatRequest, db: Database = Depends(get_db)):
         
         response = await llm_service.generate_response(chat_messages, available_tools if available_tools else None)
         
+        print(f"[DEBUG] LLM service response: {response}")
+        print(f"[DEBUG] Response type: {type(response)}")
+        print(f"[DEBUG] Response keys: {list(response.keys()) if isinstance(response, dict) else 'not a dict'}")
+        
         # Handle case where LLM makes tool calls without content
         content = response.get("content") or ""
         tool_calls = response.get("tool_calls", [])
         
-        return ChatResponse(
+        print(f"[DEBUG] Extracted content: '{content}' (length: {len(content)})")
+        print(f"[DEBUG] Extracted tool_calls: {tool_calls}")
+        
+        chat_response = ChatResponse(
             response=content,
             tool_calls=tool_calls
         )
+        
+        print(f"[DEBUG] Final ChatResponse: {chat_response}")
+        return chat_response
     except HTTPException:
         raise
     except Exception as e:
@@ -403,26 +418,15 @@ async def chat(request: ChatRequest, db: Database = Depends(get_db)):
 # Tool calling endpoint
 @router.post("/mcp/call-tool", response_model=ToolCallResponse)
 async def call_tool(request: ToolCallRequest, db: Database = Depends(get_db)):
-    try:
-        # Get server details
-        servers = db.get_mcp_servers()
-        server = next((s for s in servers if s["id"] == request.server_id), None)
-        if not server:
-            raise HTTPException(status_code=404, detail="Server not found")
-        
-        # Handle local vs remote servers
+    async def _make_tool_call(params: Dict[str, Any]):
+        """Helper function to make the actual tool call"""
         if server["server_type"] == "local":
-            print(f"[DEBUG] Calling local tool {request.tool_name} on server {request.server_id}")
-            # Call local tool
             result = await mcp_client.call_local_tool(
                 request.server_id,
                 request.tool_name, 
-                request.parameters
+                params
             )
-            print(f"[DEBUG] Local tool call result: {result}")
-            
         else:
-            print(f"[DEBUG] Calling remote tool {request.tool_name} on server {request.server_id}")
             # Get server details with API key for remote servers
             server_with_key = db.get_mcp_server_with_key(request.server_id)
             if not server_with_key:
@@ -437,11 +441,65 @@ async def call_tool(request: ToolCallRequest, db: Database = Depends(get_db)):
             result = await mcp_client.call_tool(
                 server_with_key["url"], 
                 request.tool_name, 
-                request.parameters,
+                params,
                 api_key
             )
         
-        return ToolCallResponse(success=True, result=result)
+        # Check if result contains a JSON-RPC error
+        if result and isinstance(result, dict) and "error" in result:
+            return False, result["error"]
+        elif result and isinstance(result, dict) and "result" in result:
+            return True, result["result"]
+        else:
+            return False, "Invalid response format from MCP server"
+    
+    try:
+        # Get server details
+        servers = db.get_mcp_servers()
+        server = next((s for s in servers if s["id"] == request.server_id), None)
+        if not server:
+            raise HTTPException(status_code=404, detail="Server not found")
+        
+        print(f"[DEBUG] Calling tool {request.tool_name} on {server['server_type']} server {request.server_id}")
+        print(f"[DEBUG] Original parameters: {request.parameters}")
+        
+        # First attempt with original parameters
+        success, result_or_error = await _make_tool_call(request.parameters)
+        
+        if success:
+            print(f"[DEBUG] Tool call succeeded on first attempt")
+            return ToolCallResponse(success=True, result=result_or_error)
+        
+        # First attempt failed - check if it's a parameter validation error we can correct
+        error_message = result_or_error.get("message", str(result_or_error)) if isinstance(result_or_error, dict) else str(result_or_error)
+        print(f"[DEBUG] Tool call failed: {error_message}")
+        
+        # Try to correct parameters if it's a validation error
+        if "invalid" in error_message.lower() or "required" in error_message.lower() or "expected" in error_message.lower():
+            print(f"[DEBUG] Attempting parameter correction for validation error...")
+            
+            correction = mcp_parameter_corrector.analyze_error_and_correct(error_message, request.parameters)
+            
+            if correction:
+                print(f"[DEBUG] Parameter correction found: {correction.transformation_applied}")
+                print(f"[DEBUG] Corrected parameters: {correction.corrected_params}")
+                
+                # Retry with corrected parameters
+                retry_success, retry_result_or_error = await _make_tool_call(correction.corrected_params)
+                
+                if retry_success:
+                    print(f"[DEBUG] Tool call succeeded after parameter correction!")
+                    return ToolCallResponse(success=True, result=retry_result_or_error)
+                else:
+                    print(f"[DEBUG] Tool call still failed after parameter correction: {retry_result_or_error}")
+                    # Return the original error since correction didn't help
+                    return ToolCallResponse(success=False, error=error_message)
+            else:
+                print(f"[DEBUG] No parameter correction available for this error")
+        
+        # Return the original error
+        return ToolCallResponse(success=False, error=error_message)
+        
     except Exception as e:
-        print(f"[DEBUG] Tool call failed: {str(e)}")
+        print(f"[DEBUG] Tool call exception: {str(e)}")
         return ToolCallResponse(success=False, error=str(e))

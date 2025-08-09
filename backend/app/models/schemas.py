@@ -76,6 +76,7 @@ class ChatRequest(BaseModel):
     message: str
     conversation_history: List[ChatMessage] = []
     llm_config_id: Optional[int] = None
+    exclude_tools: Optional[bool] = False  # Set to True for final responses after tool execution
 
 class ChatResponse(BaseModel):
     response: str
