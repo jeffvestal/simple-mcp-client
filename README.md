@@ -8,7 +8,8 @@ A full-stack chat application that connects to LLM providers and utilizes tools 
 This application is **fully functional** with the following working features:
 
 ✅ **Complete Tool Execution Pipeline**: End-to-end tool calling with LLM follow-up responses  
-✅ **Professional UI**: Collapsible tool call displays with status indicators  
+✅ **Smart Error Recovery**: Automatic parameter correction for any MCP server validation errors  
+✅ **Professional UI**: Collapsible tool call displays with real-time status indicators  
 ✅ **Multi-LLM Support**: OpenAI, Gemini, and Bedrock compatible APIs  
 ✅ **MCP Server Management**: Remote and local MCP server support with process management  
 ✅ **Real-time Status**: Live connection status and server health monitoring  
