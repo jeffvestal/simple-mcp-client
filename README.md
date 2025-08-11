@@ -56,25 +56,48 @@ This script will:
 - Initialize the database
 - Provide clear instructions for starting the application
 
-### 2. Easy Development Startup (Recommended)
+### 2. Quick Development Startup (Recommended)
 
-After setup, start both frontend and backend servers with a single command:
+The application supports multiple deployment environments. Use the unified start script to run both backend and frontend:
 
+#### Local Development (Default)
 ```bash
 ./start-dev.sh
+# or: ./start-dev.sh local
 ```
 
-This will:
-- Start the backend server on `http://localhost:8002`
-- Start the frontend server on `http://localhost:5173` (or next available port)
+#### Workshop/Kubernetes Environments (Instruqt, etc.)
+When the backend isn't accessible via localhost, use proxy mode:
+```bash
+./start-dev.sh proxy
+```
+
+This proxies API requests through the frontend dev server to avoid external port access issues.
+
+#### Custom Backend URL
+For remote backends or custom deployments:
+```bash
+./start-dev.sh custom https://your-backend-url/api
+# or: VITE_API_BASE_URL=https://your-backend-url/api ./start-dev.sh custom
+```
+
+#### Quick Reference - Start Options
+
+| Command | Use Case | Description |
+|---------|----------|-------------|
+| `./start-dev.sh` | Local development | Default mode, both servers on localhost |
+| `./start-dev.sh proxy` | Workshops, Kubernetes | Frontend proxies API requests |
+| `./start-dev.sh custom URL` | Remote backends | Custom backend URL |
+
+The script will:
+- Start backend server on `http://localhost:8002`
+- Start frontend server on `http://localhost:5173` (or next available port)
 - Log all output to `logs/backend.log` and `logs/frontend.log`
 - Handle graceful shutdown when you press Ctrl+C
 - Display real-time status and URLs
 
-To stop the servers:
-```bash
-./stop-dev.sh
-```
+**To stop the servers:**
+Press `Ctrl+C` in the terminal running the script.
 
 **Monitor logs in real-time:**
 ```bash

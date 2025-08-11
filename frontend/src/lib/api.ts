@@ -1,5 +1,25 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 
-                     `${window.location.protocol}//${window.location.hostname}:8002/api`
+// Smart API URL detection for different environments
+function getAPIBaseURL(): string {
+  // 1. Environment variable override (highest priority)
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL
+  }
+  
+  // 2. Local development detection
+  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    return 'http://localhost:8002/api'
+  }
+  
+  // 3. Check if we're in a proxy setup (same origin)
+  if (import.meta.env.VITE_USE_PROXY === 'true') {
+    return '/api'
+  }
+  
+  // 4. External environment - try same hostname with backend port
+  return `${window.location.protocol}//${window.location.hostname}:8002/api`
+}
+
+const API_BASE_URL = getAPIBaseURL()
 
 class APIClient {
   private baseURL: string
