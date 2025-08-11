@@ -65,6 +65,14 @@ echo ""
 echo "🐍 Setting up Backend..."
 echo "------------------------"
 
+# Check if currently in a virtual environment
+if [ -n "$VIRTUAL_ENV" ]; then
+    echo "⚠️  Currently in virtual environment: $VIRTUAL_ENV"
+    echo "Deactivating current virtual environment..."
+    deactivate 2>/dev/null || true
+    echo "✅ Deactivated current virtual environment"
+fi
+
 cd backend
 
 # Create virtual environment if it doesn't exist
@@ -77,7 +85,7 @@ else
 fi
 
 # Activate virtual environment
-echo "Activating virtual environment..."
+echo "Activating project virtual environment..."
 if [[ "$OS" == "windows" ]]; then
     source venv/Scripts/activate
 else
@@ -95,6 +103,23 @@ if [ -f "requirements.txt" ]; then
     echo "Installing Python dependencies..."
     pip install -r requirements.txt
     echo "✅ Python dependencies installed"
+    
+    # Verify key backend packages
+    echo "Verifying backend package installation..."
+    MISSING_PACKAGES=""
+    for package in "fastapi" "uvicorn" "pydantic" "httpx"; do
+        if ! python -c "import $package" 2>/dev/null; then
+            MISSING_PACKAGES="$MISSING_PACKAGES $package"
+        fi
+    done
+    
+    if [ -n "$MISSING_PACKAGES" ]; then
+        echo "❌ Missing backend packages:$MISSING_PACKAGES"
+        exit 1
+    fi
+    
+    PACKAGE_COUNT=$(pip list | grep -v "^Package\|^---" | wc -l)
+    echo "✅ Backend verification complete ($PACKAGE_COUNT packages installed)"
 else
     echo "❌ requirements.txt not found in backend directory"
     exit 1
@@ -125,6 +150,23 @@ echo "Installing Node.js dependencies..."
 npm install
 echo "✅ Node.js dependencies installed"
 
+# Verify key frontend packages
+echo "Verifying frontend package installation..."
+MISSING_PACKAGES=""
+for package in "react" "vite" "typescript" "@radix-ui/react-accordion"; do
+    if ! npm list "$package" >/dev/null 2>&1; then
+        MISSING_PACKAGES="$MISSING_PACKAGES $package"
+    fi
+done
+
+if [ -n "$MISSING_PACKAGES" ]; then
+    echo "❌ Missing frontend packages:$MISSING_PACKAGES"
+    exit 1
+fi
+
+PACKAGE_COUNT=$(npm list --depth=0 2>/dev/null | grep -c "├──\|└──" || echo "0")
+echo "✅ Frontend verification complete ($PACKAGE_COUNT direct dependencies installed)"
+
 cd ..
 
 echo ""
@@ -135,26 +177,28 @@ echo "=================="
 echo ""
 echo "Your Simple MCP Client is now ready to use!"
 echo ""
-echo "To start the application:"
+echo "🚀 Quick Start Options:"
 echo ""
-echo "1. Start the backend (in one terminal):"
-echo "   cd backend"
-if [[ "$OS" == "windows" ]]; then
-    echo "   venv\\Scripts\\activate"
-else
-    echo "   source venv/bin/activate"
-fi
-echo "   python main.py"
+echo "Local Development (default):"
+echo "   ./start-dev.sh"
 echo ""
-echo "2. Start the frontend (in another terminal):"
-echo "   cd frontend"
-echo "   npm run dev"
+echo "Workshop/Kubernetes environments (Instruqt, etc.):"
+echo "   ./start-dev.sh proxy"
 echo ""
-echo "3. Open your browser to http://localhost:5173"
+echo "Custom backend URL:"
+echo "   ./start-dev.sh custom https://your-backend-url/api"
+echo ""
+echo "The start script will:"
+echo "• Start both backend and frontend servers"
+echo "• Handle logging to logs/ directory"  
+echo "• Show live status and URLs"
+echo "• Stop gracefully with Ctrl+C"
+echo ""
+echo "📖 For detailed documentation, see README.md"
 echo ""
 echo "📝 Next steps:"
-echo "- Configure an LLM provider in Settings"
-echo "- Add MCP servers in Settings"
-echo "- Start chatting with your AI assistant!"
-echo ""
-echo "For more information, see the README.md file."
+echo "1. Run one of the start commands above"
+echo "2. Open your browser to the displayed frontend URL"
+echo "3. Configure an LLM provider in Settings"
+echo "4. Add MCP servers in Settings"
+echo "5. Start chatting with your AI assistant!"
