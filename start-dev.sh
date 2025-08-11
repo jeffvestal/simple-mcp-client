@@ -20,6 +20,39 @@ NC='\033[0m' # No Color
 # Create logs directory
 mkdir -p logs
 
+# Function to get the absolute path of the project's virtual environment
+get_project_venv_path() {
+    echo "$(pwd)/backend/venv"
+}
+
+# Function to check if we're in the correct virtual environment
+is_correct_venv() {
+    local project_venv_path=$(get_project_venv_path)
+    if [ -n "$VIRTUAL_ENV" ] && [ "$VIRTUAL_ENV" = "$project_venv_path" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to activate the project's virtual environment
+activate_project_venv() {
+    local venv_path="backend/venv"
+    
+    if [ ! -d "$venv_path" ]; then
+        echo -e "${RED}Error: Project virtual environment not found at $venv_path${NC}"
+        echo "Please run ./setup.sh first to create the virtual environment"
+        exit 1
+    fi
+    
+    # Detect OS for activation script
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+        source "$venv_path/Scripts/activate"
+    else
+        source "$venv_path/bin/activate"
+    fi
+}
+
 # Function to cleanup background processes
 cleanup() {
     echo -e "\n${YELLOW}Stopping servers...${NC}"
@@ -102,10 +135,37 @@ if ! command -v npm &> /dev/null; then
     exit 1
 fi
 
+# Virtual Environment Management
+echo -e "${YELLOW}Managing Python virtual environment...${NC}"
+
+if is_correct_venv; then
+    echo -e "${GREEN}✅ Already in correct project virtual environment${NC}"
+else
+    if [ -n "$VIRTUAL_ENV" ]; then
+        echo -e "${YELLOW}⚠️  Currently in different virtual environment: $VIRTUAL_ENV${NC}"
+        echo "Deactivating current virtual environment..."
+        deactivate 2>/dev/null || true
+    fi
+    
+    echo "Activating project virtual environment..."
+    activate_project_venv
+    echo -e "${GREEN}✅ Project virtual environment activated${NC}"
+fi
+
+# Verify we have the required packages
+if ! python -c "import fastapi, uvicorn" 2>/dev/null; then
+    echo -e "${RED}Error: Required backend packages not found in virtual environment${NC}"
+    echo "Please run ./setup.sh to install dependencies"
+    exit 1
+fi
+
+echo ""
+
 # Start Backend Server
 echo -e "${YELLOW}Starting backend server...${NC}"
 cd backend
-python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8002 > ../logs/backend.log 2>&1 &
+# Use python from activated venv (should be in PATH after activation)
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8002 > ../logs/backend.log 2>&1 &
 BACKEND_PID=$!
 echo $BACKEND_PID > ../logs/backend.pid
 cd ..
