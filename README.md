@@ -332,6 +332,14 @@ frontend/
 - **Error Handling**: Graceful error handling with user feedback
 - **State Management**: Persistent UI state with Zustand
 
+## Screenshots
+
+<img width="3424" height="1940" alt="SMC-example-chat-1" src="https://github.com/user-attachments/assets/d836cb52-0827-4766-ba26-11790705c9ff" />
+- Chat Conversation with tool call
+<br> <br>
+<img width="3352" height="1982" alt="SMC-settings-1" src="https://github.com/user-attachments/assets/b0dafe1e-2ebd-44fb-96c7-dca091959a32" />
+- Settings page for LLMs and MCP servers
+
 ## Contributing
 
 This is a demonstration project. Feel free to fork and extend it for your own needs.
