@@ -575,11 +575,34 @@ export function ChatInterfaceSimple() {
           })
           
           // Validate and clean conversation history to prevent orphaned tool messages
-          const conversationWithSuccessfulTools = validateAndCleanConversationHistory(cleanedMessages)
+          const validatedMessages = validateAndCleanConversationHistory(cleanedMessages)
           
-          console.log('🔍 DEBUG: Messages after validation:', conversationWithSuccessfulTools.length)
+          // CRITICAL FIX: Add the current assistant message with tool_calls
+          // The message store might not have the current assistant message yet
+          const currentAssistantMessage = {
+            role: 'assistant' as const,
+            content: '',
+            tool_calls: currentToolCalls.map(tc => ({
+              id: tc.id,
+              name: tc.name,
+              arguments: tc.parameters
+            }))
+          }
+          
+          // Build final conversation with the current assistant message included
+          const conversationWithSuccessfulTools = [
+            ...validatedMessages,
+            currentAssistantMessage
+          ]
+          
+          console.log('🔍 DEBUG: Messages after validation with current assistant:', conversationWithSuccessfulTools.length)
           conversationWithSuccessfulTools.forEach((msg, idx) => {
             console.log(`🔍 AFTER[${idx}]: ${msg.role} - tool_calls: ${msg.tool_calls?.length || 0} - tool_call_id: ${msg.tool_call_id || 'none'}`)
+            if (msg.tool_calls && msg.tool_calls.length > 0) {
+              msg.tool_calls.forEach((tc, tcIdx) => {
+                console.log(`🔍   AFTER_TOOL_CALL[${tcIdx}]: id=${tc.id}, name=${tc.name}`)
+              })
+            }
           })
           
           // Add tool result messages to main store and conversation history
