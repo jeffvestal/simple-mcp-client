@@ -534,6 +534,7 @@ export function ChatInterfaceSimple() {
           
           const maxAttempts = 3
           let apiCallAttempts = 0
+          let finalResponse
           
           while (apiCallAttempts < maxAttempts) {
             apiCallAttempts++
@@ -541,7 +542,7 @@ export function ChatInterfaceSimple() {
             try {
               console.log(`📞 API call attempt ${apiCallAttempts}...`)
               
-              const finalResponse = await api.chat({
+              finalResponse = await api.chat({
                 message: "",
                 conversation_history: conversationWithSuccessfulTools,
                 llm_config_id: activeLLMConfig.id,
