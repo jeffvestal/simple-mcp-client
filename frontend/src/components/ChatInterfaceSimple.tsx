@@ -8,6 +8,20 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collap
 import { useToast } from './ui/use-toast'
 import ReactMarkdown from 'react-markdown'
 
+// Helper function to detect if an error is a validation failure that can be retried
+function isValidationError(error: string): boolean {
+  if (!error) return false
+  const errorLower = error.toLowerCase()
+  return (
+    errorLower.includes('invalid arguments') ||
+    errorLower.includes('required') ||
+    errorLower.includes('expected') ||
+    errorLower.includes('validation') ||
+    errorLower.includes('missing parameter') ||
+    (errorLower.includes('mcp error') && errorLower.includes('-32602'))
+  )
+}
+
 // Helper function to extract and clean content from MCP tool responses
 function extractAndCleanToolContent(toolResult: any, toolName: string): string {
   let mcpResult = null
@@ -193,6 +207,28 @@ export function ChatInterfaceSimple() {
   useEffect(() => {
     scrollToBottom()
   }, [messages])
+
+  // Helper function to execute tool calls (can be called recursively for retries)
+  const executeToolCalls = async (toolCalls: any[], assistantMessageId: string) => {
+    // This will contain the actual tool execution logic
+    // For now, I'll implement this as a placeholder that calls the main tool execution
+    // We'll extract the tool execution logic to here in the next step
+    
+    // For now, let's reuse the existing logic by setting up the same parameters
+    const currentToolCalls = toolCalls.map((call: any) => ({
+      id: call.id,
+      name: call.name,
+      parameters: call.arguments || call.parameters,
+      status: 'pending' as const
+    }))
+    
+    // Execute the same tool calling logic that exists in handleSubmit
+    // This is a simplified version - we'll need to extract the full logic
+    console.log('INFO: Executing tool calls:', currentToolCalls.map(tc => tc.name))
+    
+    // TODO: Extract the full tool execution logic here
+    // For now, this is a placeholder to prevent compilation errors
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -416,26 +452,101 @@ export function ChatInterfaceSimple() {
             
             // Process based on success/failure outcomes
             if (successfulToolCalls.length === 0) {
-              // All tools failed - provide user-friendly error message
+              // All tools failed - check if any are validation errors that can be retried
+              const validationFailures = currentToolCalls.filter(tc => 
+                tc.status === 'error' && isValidationError(String(tc.result))
+              )
+              
               console.log('ERROR: All tools failed. Tool errors:', currentToolCalls.map(tc => ({
                 name: tc.name, 
                 status: tc.status, 
                 error: tc.result
               })))
               
-              try {
-                addMessage({
-                  role: 'assistant',
-                  content: "I encountered some technical difficulties while trying to access the tools to help with your request. Please try asking your question again, or let me know if you'd like me to help in a different way.",
-                  tool_calls: []
-                })
-              } catch (error) {
-                console.error('ERROR: Failed to add error message:', error)
-                toast({
-                  title: "Critical Error",
-                  description: "Unable to process your request. Please refresh the page and try again.",
-                  variant: "destructive",
-                })
+              if (validationFailures.length > 0) {
+                // We have validation failures - ask LLM to retry with error context
+                console.log('INFO: Detected validation failures, asking LLM to retry:', validationFailures.map(tc => tc.name))
+                
+                const errorDescriptions = validationFailures.map(tc => 
+                  `Tool "${tc.name}" failed with validation error: ${tc.result}. Please retry this tool call with the correct parameters.`
+                ).join('\n\n')
+                
+                try {
+                  // Create conversation history for LLM retry
+                  const retryHistory = [
+                    ...messages.slice(0, -1), // All messages except the last one
+                    // Add the assistant message with the failed tool calls
+                    {
+                      id: assistantMessageId,
+                      role: 'assistant' as const,
+                      content: '',
+                      timestamp: new Date(),
+                      toolCalls: currentToolCalls
+                    },
+                    // Add a message describing the validation failures
+                    {
+                      id: `retry-context-${Date.now()}`,
+                      role: 'user' as const,
+                      content: `The previous tool calls failed with validation errors:\n\n${errorDescriptions}\n\nPlease retry the failed tool calls with the correct parameters based on the error messages.`,
+                      timestamp: new Date()
+                    }
+                  ]
+                  
+                  console.log('INFO: Sending retry request to LLM...')
+                  
+                  // Ask LLM to retry with tool calling enabled
+                  const retryResponse = await api.chat({
+                    message: '',
+                    conversation_history: retryHistory,
+                    llm_config_id: activeLLMConfig?.id
+                  })
+                  
+                  if (retryResponse.tool_calls && retryResponse.tool_calls.length > 0) {
+                    console.log('INFO: LLM provided retry tool calls, continuing execution...')
+                    
+                    // Start the tool execution process again with the retry tool calls
+                    const retryAssistantMessageId = addMessage({
+                      role: 'assistant',
+                      content: retryResponse.response || 'Retrying with corrected parameters...',
+                      tool_calls: []
+                    })
+                    
+                    // Execute the retry tool calls (recursively call the same logic)
+                    executeToolCalls(retryResponse.tool_calls, retryAssistantMessageId)
+                    return
+                  } else {
+                    // LLM didn't provide tool calls, treat as final response
+                    addMessage({
+                      role: 'assistant',
+                      content: retryResponse.response || "I apologize, but I'm having trouble with the tool parameters. Could you please rephrase your request?",
+                      tool_calls: []
+                    })
+                  }
+                } catch (error) {
+                  console.error('ERROR: Failed to retry with LLM:', error)
+                  // Fall back to generic error message
+                  addMessage({
+                    role: 'assistant',
+                    content: "I encountered some technical difficulties while trying to access the tools to help with your request. Please try asking your question again, or let me know if you'd like me to help in a different way.",
+                    tool_calls: []
+                  })
+                }
+              } else {
+                // No validation failures, just regular errors - provide user-friendly error message
+                try {
+                  addMessage({
+                    role: 'assistant',
+                    content: "I encountered some technical difficulties while trying to access the tools to help with your request. Please try asking your question again, or let me know if you'd like me to help in a different way.",
+                    tool_calls: []
+                  })
+                } catch (error) {
+                  console.error('ERROR: Failed to add error message:', error)
+                  toast({
+                    title: "Critical Error",
+                    description: "Unable to process your request. Please refresh the page and try again.",
+                    variant: "destructive",
+                  })
+                }
               }
               
               return

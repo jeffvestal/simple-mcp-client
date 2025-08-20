@@ -154,49 +154,6 @@ class MCPParameterCorrector:
     def _handle_specific_patterns(self, error_message: str, params: Dict[str, Any]) -> Optional[ParameterCorrection]:
         """Handle specific known error patterns"""
         
-        # Handle the specific error: index → indices array
-        if "indices" in error_message and "index" in params:
-            corrected_params = params.copy()
-            corrected_params["indices"] = [params["index"]]
-            corrected_params.pop("index")
-            
-            return ParameterCorrection(
-                original_params=params,
-                corrected_params=corrected_params,
-                transformation_applied="Converted 'index' string to 'indices' array",
-                confidence=0.9
-            )
-        
-        # Handle the specific error: index_name → indices array
-        if "indices" in error_message and "index_name" in params:
-            corrected_params = params.copy()
-            corrected_params["indices"] = [params["index_name"]]
-            corrected_params.pop("index_name")
-            
-            return ParameterCorrection(
-                original_params=params,
-                corrected_params=corrected_params,
-                transformation_applied="Converted 'index_name' string to 'indices' array",
-                confidence=0.9
-            )
-        
-        # Handle missing query parameter for execute_esql
-        if "query" in error_message and "Required" in error_message:
-            # Common parameter names that might map to 'query'
-            query_aliases = ["esql", "sql", "search", "statement", "command", "expression"]
-            for alias in query_aliases:
-                if alias in params:
-                    corrected_params = params.copy()
-                    corrected_params["query"] = params[alias]
-                    corrected_params.pop(alias)
-                    
-                    return ParameterCorrection(
-                        original_params=params,
-                        corrected_params=corrected_params,
-                        transformation_applied=f"Renamed '{alias}' to required 'query' parameter",
-                        confidence=0.8
-                    )
-        
         # Handle array requirements in general
         if "Required" in error_message and "array" in error_message:
             # Try to extract the required field name
