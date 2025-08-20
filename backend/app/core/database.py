@@ -218,6 +218,9 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE mcp_servers SET is_enabled = ? WHERE id = ?", (enabled, server_id))
+            # When disabling a server, disable all its tools as well
+            if not enabled:
+                cursor.execute("UPDATE mcp_tools SET is_enabled = ? WHERE server_id = ?", (False, server_id))
     
     def delete_mcp_server(self, server_id: int):
         with self.get_connection() as conn:

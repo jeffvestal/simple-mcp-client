@@ -295,6 +295,16 @@ export function SettingsPage() {
     try {
       await api.toggleMCPServer(serverId, enabled)
       await loadConfigurations()
+      
+      // If the server is expanded and has tools cached, refresh them to show updated state
+      if (expandedServers.has(serverId) && serverTools.has(serverId)) {
+        try {
+          const serverWithTools = await api.getMCPServerWithTools(serverId)
+          setServerTools(prev => new Map(prev.set(serverId, serverWithTools.tools || [])))
+        } catch (error) {
+          console.error('Failed to refresh server tools:', error)
+        }
+      }
     } catch (error) {
       toast({
         title: "Toggle Error",
@@ -648,13 +658,15 @@ export function SettingsPage() {
                       open={expandedServers.has(server.id)}
                       onOpenChange={() => toggleServerExpanded(server.id)}
                     >
-                      <CollapsibleTrigger className="w-full p-4 text-left hover:bg-muted/50">
+                      <div className="p-4">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
-                            {expandedServers.has(server.id) ? 
-                              <ChevronDown className="h-4 w-4" /> : 
-                              <ChevronRight className="h-4 w-4" />
-                            }
+                            <CollapsibleTrigger className="p-0 hover:bg-transparent">
+                              {expandedServers.has(server.id) ? 
+                                <ChevronDown className="h-4 w-4" /> : 
+                                <ChevronRight className="h-4 w-4" />
+                              }
+                            </CollapsibleTrigger>
                             <div className="flex items-center gap-3">
                               {server.server_type === 'local' ? (
                                 <Terminal className="h-4 w-4 text-blue-500" />
@@ -683,10 +695,7 @@ export function SettingsPage() {
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      handleStopLocalServer(server.id)
-                                    }}
+                                    onClick={() => handleStopLocalServer(server.id)}
                                     className="text-red-600 hover:text-red-700"
                                   >
                                     <Square className="h-3 w-3 mr-1" />
@@ -696,10 +705,7 @@ export function SettingsPage() {
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      handleStartLocalServer(server.id)
-                                    }}
+                                    onClick={() => handleStartLocalServer(server.id)}
                                     className="text-green-600 hover:text-green-700"
                                   >
                                     <Play className="h-3 w-3 mr-1" />
@@ -711,21 +717,17 @@ export function SettingsPage() {
                             <Switch
                               checked={server.is_enabled}
                               onCheckedChange={(checked) => handleServerToggle(server.id, checked)}
-                              onClick={(e) => e.stopPropagation()}
                             />
                             <Button
                               variant="ghost"
                               size="icon"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleServerDelete(server.id)
-                              }}
+                              onClick={() => handleServerDelete(server.id)}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
                           </div>
                         </div>
-                      </CollapsibleTrigger>
+                      </div>
                       <CollapsibleContent className="px-4 pb-4">
                         <div className="space-y-2 mt-4">
                           <Label>Available Tools</Label>
