@@ -261,7 +261,7 @@ export function ChatInterfaceSimple() {
   }, [messages])
 
   // Helper function to execute tool calls (can be called recursively for retries)
-  const executeToolCalls = async (toolCalls: any[], assistantMessageId: string) => {
+  const executeToolCalls = async (toolCalls: any[], assistantMessageId: string, currentUserMessage?: string) => {
     if (!toolCalls || toolCalls.length === 0) return
     
     let allToolsCompleted = true
@@ -498,7 +498,7 @@ export function ChatInterfaceSimple() {
                 })
                 
                 // Execute the retry tool calls (recursively call the same logic)
-                await executeToolCalls(retryResponse.tool_calls, retryAssistantMessageId)
+                await executeToolCalls(retryResponse.tool_calls, retryAssistantMessageId, currentUserMessage)
                 return
               } else {
                 // LLM didn't provide tool calls, treat as final response
@@ -594,11 +594,23 @@ export function ChatInterfaceSimple() {
             }))
           }
           
-          // Build final conversation with the current assistant message included
+          // Build final conversation with the current user message and assistant message included
           const conversationWithSuccessfulTools = [
-            ...validatedMessages,
-            currentAssistantMessage
+            ...validatedMessages
           ]
+          
+          // Add current user message if provided (critical for context)
+          if (currentUserMessage) {
+            conversationWithSuccessfulTools.push({
+              role: 'user' as const,
+              content: currentUserMessage,
+              tool_calls: undefined,
+              tool_call_id: undefined
+            })
+          }
+          
+          // Add current assistant message with tool_calls
+          conversationWithSuccessfulTools.push(currentAssistantMessage)
           
           console.log('🔍 DEBUG: Messages after validation with current assistant:', conversationWithSuccessfulTools.length)
           conversationWithSuccessfulTools.forEach((msg, idx) => {
@@ -807,7 +819,7 @@ export function ChatInterfaceSimple() {
 
       // Execute tool calls if any
       if (toolCalls.length > 0) {
-        await executeToolCalls(toolCalls, assistantMessageId)
+        await executeToolCalls(toolCalls, assistantMessageId, userMessage)
       }
 
     } catch (error) {
