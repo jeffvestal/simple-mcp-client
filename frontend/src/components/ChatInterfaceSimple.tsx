@@ -515,10 +515,19 @@ export function ChatInterfaceSimple() {
             }
           ]
           
-          // Add tool result messages for successful tools
+          // Add tool result messages to main store and conversation history
           for (const tc of successfulToolCalls) {
             if (tc.result) {
               const toolResultContent = extractAndCleanToolContent(tc.result, tc.name)
+              
+              // Add to main message store for future conversation history
+              addMessage({
+                role: 'tool',
+                content: toolResultContent,
+                tool_call_id: tc.id
+              })
+              
+              // Add to current conversation for final LLM call
               conversationWithSuccessfulTools.push({
                 id: `tool-result-${tc.id}`,
                 role: 'tool' as const,
