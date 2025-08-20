@@ -374,16 +374,40 @@ export function ChatInterfaceSimple() {
             ).join('\n\n')
             
             try {
-              // Create conversation history for LLM retry
+              // Create conversation history for LLM retry with proper cleaning
+              const cleanedMessages = messages.slice(0, -1).map(msg => {
+                // Clean tool calls to remove internal execution data
+                let cleanedToolCalls = undefined
+                if (msg.tool_calls && msg.tool_calls.length > 0) {
+                  cleanedToolCalls = msg.tool_calls.map((tc: any) => ({
+                    id: tc.id,
+                    name: tc.name,
+                    arguments: tc.parameters || tc.arguments
+                    // Remove: status, result, and other internal fields
+                  }))
+                }
+                
+                return {
+                  role: msg.role,
+                  content: msg.content,
+                  tool_calls: cleanedToolCalls,
+                  tool_call_id: msg.tool_call_id // Preserve tool_call_id for tool messages
+                }
+              })
+              
               const retryHistory = [
-                ...messages.slice(0, -1), // All messages except the last one
+                ...cleanedMessages,
                 // Add the assistant message with the failed tool calls
                 {
                   id: assistantMessageId,
                   role: 'assistant' as const,
                   content: '',
                   timestamp: new Date(),
-                  toolCalls: currentToolCalls
+                  tool_calls: currentToolCalls.map(tc => ({
+                    id: tc.id,
+                    name: tc.name,
+                    arguments: tc.parameters
+                  }))
                 },
                 // Add a message describing the validation failures
                 {
@@ -455,14 +479,39 @@ export function ChatInterfaceSimple() {
           
         } else {
           // Some or all tools succeeded - proceed with normal flow
+          // Clean message history for backend compatibility
+          const cleanedMessages = messages.slice(0, -1).map(msg => {
+            // Clean tool calls to remove internal execution data
+            let cleanedToolCalls = undefined
+            if (msg.tool_calls && msg.tool_calls.length > 0) {
+              cleanedToolCalls = msg.tool_calls.map((tc: any) => ({
+                id: tc.id,
+                name: tc.name,
+                arguments: tc.parameters || tc.arguments
+                // Remove: status, result, and other internal fields
+              }))
+            }
+            
+            return {
+              role: msg.role,
+              content: msg.content,
+              tool_calls: cleanedToolCalls,
+              tool_call_id: msg.tool_call_id // Preserve tool_call_id for tool messages
+            }
+          })
+          
           const conversationWithSuccessfulTools = [
-            ...messages.slice(0, -1), // All messages except the last user message
+            ...cleanedMessages,
             {
               id: assistantMessageId,
               role: 'assistant' as const,
               content: '',
               timestamp: new Date(),
-              toolCalls: currentToolCalls
+              tool_calls: currentToolCalls.map(tc => ({
+                id: tc.id,
+                name: tc.name,
+                arguments: tc.parameters
+              }))
             }
           ]
           
