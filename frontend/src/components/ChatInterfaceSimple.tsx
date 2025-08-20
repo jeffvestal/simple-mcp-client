@@ -489,11 +489,16 @@ export function ChatInterfaceSimple() {
                 const retryAssistantMessageId = addMessage({
                   role: 'assistant',
                   content: retryResponse.response || 'Retrying with corrected parameters...',
-                  tool_calls: []
+                  tool_calls: retryResponse.tool_calls.map((call: any) => ({
+                    id: call.id,
+                    name: call.name,
+                    parameters: call.arguments,
+                    status: 'pending' as const
+                  }))
                 })
                 
                 // Execute the retry tool calls (recursively call the same logic)
-                executeToolCalls(retryResponse.tool_calls, retryAssistantMessageId)
+                await executeToolCalls(retryResponse.tool_calls, retryAssistantMessageId)
                 return
               } else {
                 // LLM didn't provide tool calls, treat as final response
