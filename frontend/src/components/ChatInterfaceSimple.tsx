@@ -417,6 +417,21 @@ export function ChatInterfaceSimple() {
             error: tc.result
           })))
           
+          // CRITICAL: Add tool response messages for ALL failed tools BEFORE retry
+          // This ensures the conversation history is valid for the retry attempt
+          for (const tc of currentToolCalls) {
+            const errorContent = `Error executing ${tc.name}: ${tc.result || 'Tool execution failed'}`
+            
+            // Add error response to message store
+            addMessage({
+              role: 'tool',
+              content: errorContent,
+              tool_call_id: tc.id
+            })
+            
+            console.log(`📝 Added error response for failed tool ${tc.name} (${tc.id}) before retry`)
+          }
+          
           if (validationFailures.length > 0) {
             // We have validation failures - ask LLM to retry with error context
             console.log('INFO: Detected validation failures, asking LLM to retry:', validationFailures.map(tc => tc.name))
@@ -427,7 +442,8 @@ export function ChatInterfaceSimple() {
             
             try {
               // Create conversation history for LLM retry with validation and cleaning
-              const cleanedMessages = messages.slice(0, -1).map(msg => {
+              // Use the current messages which now include the error responses
+              const cleanedMessages = messages.map(msg => {
                 // Clean tool calls to remove internal execution data
                 let cleanedToolCalls = undefined
                 if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -452,18 +468,6 @@ export function ChatInterfaceSimple() {
               
               const retryHistory = [
                 ...validatedMessages,
-                // Add the assistant message with the failed tool calls
-                {
-                  id: assistantMessageId,
-                  role: 'assistant' as const,
-                  content: '',
-                  timestamp: new Date(),
-                  tool_calls: currentToolCalls.map(tc => ({
-                    id: tc.id,
-                    name: tc.name,
-                    arguments: tc.parameters
-                  }))
-                },
                 // Add a message describing the validation failures
                 {
                   id: `retry-context-${Date.now()}`,
