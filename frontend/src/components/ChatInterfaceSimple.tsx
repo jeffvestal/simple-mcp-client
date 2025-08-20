@@ -154,36 +154,44 @@ function extractAndCleanToolContent(toolResult: any, toolName: string): string {
 
 // Helper function to validate and clean conversation history for OpenAI API compliance
 function validateAndCleanConversationHistory(messages: any[]): any[] {
+  console.log('🔍 VALIDATION: Starting validation of', messages.length, 'messages')
   const cleanedHistory: any[] = []
   let lastAssistantToolCalls: any[] | null = null
   
   for (const msg of messages) {
     if (msg.role === 'user') {
       // User messages are always valid
+      console.log('🔍 VALIDATION: Keeping user message')
       cleanedHistory.push(msg)
       lastAssistantToolCalls = null // Reset tool call tracking
     } else if (msg.role === 'assistant') {
       // Assistant messages are always valid
+      console.log('🔍 VALIDATION: Keeping assistant message, tool_calls:', msg.tool_calls?.length || 0)
       cleanedHistory.push(msg)
       // Track if this assistant message has tool calls
       lastAssistantToolCalls = msg.tool_calls && msg.tool_calls.length > 0 ? msg.tool_calls : null
+      if (lastAssistantToolCalls) {
+        console.log('🔍 VALIDATION: Tracking tool_call_ids:', lastAssistantToolCalls.map(tc => tc.id).join(', '))
+      }
     } else if (msg.role === 'tool') {
       // Tool messages are only valid if they follow an assistant message with matching tool_calls
+      console.log(`🔍 VALIDATION: Processing tool message with tool_call_id: ${msg.tool_call_id}`)
       if (lastAssistantToolCalls && msg.tool_call_id) {
         // Check if this tool message matches one of the expected tool_call_ids
         const matchingToolCall = lastAssistantToolCalls.find((tc: any) => tc.id === msg.tool_call_id)
         if (matchingToolCall) {
           // Valid tool message - include it
+          console.log(`🔍 VALIDATION: ✅ Keeping tool message, matches tool_call_id: ${msg.tool_call_id}`)
           cleanedHistory.push(msg)
           // Remove this tool call from tracking to prevent duplicates
           lastAssistantToolCalls = lastAssistantToolCalls.filter((tc: any) => tc.id !== msg.tool_call_id)
         } else {
           // Invalid tool message - skip it
-          console.log(`Skipping orphaned tool message with tool_call_id: ${msg.tool_call_id}`)
+          console.log(`🔍 VALIDATION: ❌ Skipping orphaned tool message with tool_call_id: ${msg.tool_call_id}`)
         }
       } else {
         // No preceding assistant message with tool calls - skip this tool message
-        console.log(`Skipping tool message without preceding assistant tool calls: ${msg.tool_call_id}`)
+        console.log(`🔍 VALIDATION: ❌ Skipping tool message without preceding assistant tool calls: ${msg.tool_call_id}`)
       }
     } else {
       // Other message types (if any) - include them
@@ -192,6 +200,7 @@ function validateAndCleanConversationHistory(messages: any[]): any[] {
     }
   }
   
+  console.log('🔍 VALIDATION: Finished validation, returning', cleanedHistory.length, 'messages')
   return cleanedHistory
 }
 
@@ -526,6 +535,17 @@ export function ChatInterfaceSimple() {
         } else {
           // Some or all tools succeeded - proceed with normal flow
           // Build conversation history with validation and cleaning
+          console.log('🔍 DEBUG: Building conversation for final LLM call')
+          console.log('🔍 DEBUG: Messages in store:', messages.length)
+          messages.forEach((msg, idx) => {
+            console.log(`🔍 MSG[${idx}]: ${msg.role} - "${msg.content?.substring(0, 50)}..." - tool_calls: ${msg.tool_calls?.length || 0} - tool_call_id: ${msg.tool_call_id || 'none'}`)
+            if (msg.tool_calls && msg.tool_calls.length > 0) {
+              msg.tool_calls.forEach((tc, tcIdx) => {
+                console.log(`🔍   TOOL_CALL[${tcIdx}]: id=${tc.id}, name=${tc.name}`)
+              })
+            }
+          })
+          
           const cleanedMessages = []
           
           // Clean all messages from store, including current conversation context
@@ -549,12 +569,24 @@ export function ChatInterfaceSimple() {
             })
           }
           
+          console.log('🔍 DEBUG: Messages before validation:', cleanedMessages.length)
+          cleanedMessages.forEach((msg, idx) => {
+            console.log(`🔍 BEFORE[${idx}]: ${msg.role} - tool_calls: ${msg.tool_calls?.length || 0} - tool_call_id: ${msg.tool_call_id || 'none'}`)
+          })
+          
           // Validate and clean conversation history to prevent orphaned tool messages
           const conversationWithSuccessfulTools = validateAndCleanConversationHistory(cleanedMessages)
           
+          console.log('🔍 DEBUG: Messages after validation:', conversationWithSuccessfulTools.length)
+          conversationWithSuccessfulTools.forEach((msg, idx) => {
+            console.log(`🔍 AFTER[${idx}]: ${msg.role} - tool_calls: ${msg.tool_calls?.length || 0} - tool_call_id: ${msg.tool_call_id || 'none'}`)
+          })
+          
           // Add tool result messages to main store and conversation history
+          console.log('🔍 DEBUG: Adding tool results for successful tools:', successfulToolCalls.length)
           for (const tc of successfulToolCalls) {
             if (tc.result) {
+              console.log(`🔍 TOOL_RESULT: Adding tool response for ${tc.name} with tool_call_id: ${tc.id}`)
               const toolResultContent = extractAndCleanToolContent(tc.result, tc.name)
               
               // Add to main message store for future conversation history
@@ -574,6 +606,16 @@ export function ChatInterfaceSimple() {
               })
             }
           }
+          
+          console.log('🔍 DEBUG: Final conversation to be sent to LLM API:', conversationWithSuccessfulTools.length)
+          conversationWithSuccessfulTools.forEach((msg, idx) => {
+            console.log(`🔍 FINAL[${idx}]: ${msg.role} - "${msg.content?.substring(0, 30)}..." - tool_calls: ${msg.tool_calls?.length || 0} - tool_call_id: ${msg.tool_call_id || 'none'}`)
+            if (msg.tool_calls && msg.tool_calls.length > 0) {
+              msg.tool_calls.forEach((tc, tcIdx) => {
+                console.log(`🔍   FINAL_TOOL_CALL[${tcIdx}]: id=${tc.id}, name=${tc.name}`)
+              })
+            }
+          })
           
           console.log('📨 Sending tool results to LLM for final response...')
           console.log('📋 Conversation length:', conversationWithSuccessfulTools.length)
