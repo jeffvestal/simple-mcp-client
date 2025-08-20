@@ -154,6 +154,19 @@ class MCPParameterCorrector:
     def _handle_specific_patterns(self, error_message: str, params: Dict[str, Any]) -> Optional[ParameterCorrection]:
         """Handle specific known error patterns"""
         
+        # Handle the specific error: index → indices array
+        if "indices" in error_message and "index" in params:
+            corrected_params = params.copy()
+            corrected_params["indices"] = [params["index"]]
+            corrected_params.pop("index")
+            
+            return ParameterCorrection(
+                original_params=params,
+                corrected_params=corrected_params,
+                transformation_applied="Converted 'index' string to 'indices' array",
+                confidence=0.9
+            )
+        
         # Handle the specific error: index_name → indices array
         if "indices" in error_message and "index_name" in params:
             corrected_params = params.copy()

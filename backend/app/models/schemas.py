@@ -92,5 +92,5 @@ class ToolCallRequest(BaseModel):
 
 class ToolCallResponse(BaseModel):
     success: bool
-    result: Any
+    result: Optional[Any] = None
     error: Optional[str] = None

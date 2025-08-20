@@ -493,13 +493,13 @@ async def call_tool(request: ToolCallRequest, db: Database = Depends(get_db)):
                 else:
                     print(f"[DEBUG] Tool call still failed after parameter correction: {retry_result_or_error}")
                     # Return the original error since correction didn't help
-                    return ToolCallResponse(success=False, error=error_message)
+                    return ToolCallResponse(success=False, result=None, error=error_message)
             else:
                 print(f"[DEBUG] No parameter correction available for this error")
         
         # Return the original error
-        return ToolCallResponse(success=False, error=error_message)
+        return ToolCallResponse(success=False, result=None, error=error_message)
         
     except Exception as e:
         print(f"[DEBUG] Tool call exception: {str(e)}")
-        return ToolCallResponse(success=False, error=str(e))
+        return ToolCallResponse(success=False, result=None, error=str(e))
