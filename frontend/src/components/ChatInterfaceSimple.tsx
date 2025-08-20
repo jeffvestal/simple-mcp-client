@@ -210,24 +210,366 @@ export function ChatInterfaceSimple() {
 
   // Helper function to execute tool calls (can be called recursively for retries)
   const executeToolCalls = async (toolCalls: any[], assistantMessageId: string) => {
-    // This will contain the actual tool execution logic
-    // For now, I'll implement this as a placeholder that calls the main tool execution
-    // We'll extract the tool execution logic to here in the next step
+    if (!toolCalls || toolCalls.length === 0) return
     
-    // For now, let's reuse the existing logic by setting up the same parameters
-    const currentToolCalls = toolCalls.map((call: any) => ({
+    let allToolsCompleted = true
+    let currentToolCalls = toolCalls.map((call: any) => ({
       id: call.id,
       name: call.name,
       parameters: call.arguments || call.parameters,
       status: 'pending' as const
     }))
     
-    // Execute the same tool calling logic that exists in handleSubmit
-    // This is a simplified version - we'll need to extract the full logic
-    console.log('INFO: Executing tool calls:', currentToolCalls.map(tc => tc.name))
+    try {
+      // Process tool calls sequentially
+      for (const toolCall of currentToolCalls) {
+        try {
+          // Find the server that has this tool
+          const servers = await api.getMCPServers()
+          let targetServerId = null
+          for (const server of servers) {
+            const serverDetails = await api.getMCPServerWithTools(server.id)
+            if (serverDetails.tools.some((tool: any) => tool.name === toolCall.name && tool.is_enabled)) {
+              targetServerId = server.id
+              break
+            }
+          }
+
+          if (targetServerId) {
+            const toolResult = await api.callTool({
+              tool_name: toolCall.name,
+              parameters: toolCall.parameters,
+              server_id: targetServerId
+            })
+
+            // Update tool call status
+            const updatedToolCalls = currentToolCalls.map(tc => 
+              tc.id === toolCall.id 
+                ? { 
+                    ...tc, 
+                    status: toolResult.success ? 'completed' as const : 'error' as const,
+                    result: toolResult.success ? toolResult.result : toolResult.error
+                  }
+                : tc
+            )
+            
+            // Log tool execution result
+            if (toolResult.success) {
+              console.log(`✅ Tool ${toolCall.name} completed successfully`)
+            } else {
+              console.log(`❌ Tool ${toolCall.name} failed: ${toolResult.error}`)
+            }
+            
+            currentToolCalls = updatedToolCalls
+            updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
+            allToolsCompleted = allToolsCompleted && toolResult.success
+          } else {
+            // Tool not found
+            const updatedToolCalls = currentToolCalls.map(tc => 
+              tc.id === toolCall.id 
+                ? { 
+                    ...tc, 
+                    status: 'error' as const,
+                    result: 'Tool not found or disabled'
+                  }
+                : tc
+            )
+            
+            currentToolCalls = updatedToolCalls
+            updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
+            allToolsCompleted = false
+          }
+        } catch (error) {
+          console.error('ERROR: Individual tool execution failed:', error)
+          
+          // Update tool call with error status
+          const updatedToolCalls = currentToolCalls.map(tc => 
+            tc.id === toolCall.id 
+              ? { 
+                  ...tc, 
+                  status: 'error' as const,
+                  result: error instanceof Error ? error.message : 'Unknown error'
+                }
+              : tc
+          )
+          
+          currentToolCalls = updatedToolCalls
+          updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
+          allToolsCompleted = false
+          
+          toast({
+            title: "Tool Error",
+            description: `${toolCall.name} failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            variant: "destructive",
+          })
+        }
+      }
+    } catch (error) {
+      console.error('ERROR: Critical failure in tool execution loop:', error)
+      
+      // Mark all remaining tools as failed
+      currentToolCalls = currentToolCalls.map(tc => 
+        tc.status === 'pending' ? { ...tc, status: 'error' as const, result: 'Tool execution interrupted' } : tc
+      )
+      updateMessage(assistantMessageId, { tool_calls: currentToolCalls })
+      allToolsCompleted = false
+      
+      toast({
+        title: "Tool Execution Error",
+        description: "Critical failure during tool processing",
+        variant: "destructive",
+      })
+    }
     
-    // TODO: Extract the full tool execution logic here
-    // For now, this is a placeholder to prevent compilation errors
+    // After all tools are executed, process results and continue conversation
+    if (currentToolCalls.length > 0) {
+      try {
+        // Filter tool calls that have actual successful results (exclude errors)
+        const successfulToolCalls = currentToolCalls.filter(tc => {
+          // Must be completed successfully
+          if (tc.status !== 'completed') {
+            console.log(`Tool ${tc.name} excluded: status is ${tc.status}`)
+            return false
+          }
+          
+          // Must have usable result content
+          if (!tc.result) {
+            console.log(`Tool ${tc.name} excluded: no result`)
+            return false
+          }
+          
+          // Check if we have any usable content in the successful result
+          let hasContent = false
+          if (tc.result.result) {
+            const mcpResponseResult = tc.result.result
+            hasContent = !!(mcpResponseResult.content || mcpResponseResult.structuredContent || mcpResponseResult.result)
+          } else if (tc.result.content || tc.result.structuredContent) {
+            hasContent = true
+          } else {
+            hasContent = typeof tc.result === 'object' && Object.keys(tc.result).length > 0
+          }
+          
+          return hasContent
+        })
+        
+        // Process based on success/failure outcomes
+        if (successfulToolCalls.length === 0) {
+          // All tools failed - check if any are validation errors that can be retried
+          const validationFailures = currentToolCalls.filter(tc => 
+            tc.status === 'error' && isValidationError(String(tc.result))
+          )
+          
+          console.log('ERROR: All tools failed. Tool errors:', currentToolCalls.map(tc => ({
+            name: tc.name, 
+            status: tc.status, 
+            error: tc.result
+          })))
+          
+          if (validationFailures.length > 0) {
+            // We have validation failures - ask LLM to retry with error context
+            console.log('INFO: Detected validation failures, asking LLM to retry:', validationFailures.map(tc => tc.name))
+            
+            const errorDescriptions = validationFailures.map(tc => 
+              `Tool "${tc.name}" failed with validation error: ${tc.result}. Please retry this tool call with the correct parameters.`
+            ).join('\n\n')
+            
+            try {
+              // Create conversation history for LLM retry
+              const retryHistory = [
+                ...messages.slice(0, -1), // All messages except the last one
+                // Add the assistant message with the failed tool calls
+                {
+                  id: assistantMessageId,
+                  role: 'assistant' as const,
+                  content: '',
+                  timestamp: new Date(),
+                  toolCalls: currentToolCalls
+                },
+                // Add a message describing the validation failures
+                {
+                  id: `retry-context-${Date.now()}`,
+                  role: 'user' as const,
+                  content: `The previous tool calls failed with validation errors:\n\n${errorDescriptions}\n\nPlease retry the failed tool calls with the correct parameters based on the error messages.`,
+                  timestamp: new Date()
+                }
+              ]
+              
+              console.log('INFO: Sending retry request to LLM...')
+              
+              // Ask LLM to retry with tool calling enabled
+              const retryResponse = await api.chat({
+                message: '',
+                conversation_history: retryHistory,
+                llm_config_id: activeLLMConfig?.id
+              })
+              
+              if (retryResponse.tool_calls && retryResponse.tool_calls.length > 0) {
+                console.log('INFO: LLM provided retry tool calls, continuing execution...')
+                
+                // Start the tool execution process again with the retry tool calls
+                const retryAssistantMessageId = addMessage({
+                  role: 'assistant',
+                  content: retryResponse.response || 'Retrying with corrected parameters...',
+                  tool_calls: []
+                })
+                
+                // Execute the retry tool calls (recursively call the same logic)
+                executeToolCalls(retryResponse.tool_calls, retryAssistantMessageId)
+                return
+              } else {
+                // LLM didn't provide tool calls, treat as final response
+                addMessage({
+                  role: 'assistant',
+                  content: retryResponse.response || "I apologize, but I'm having trouble with the tool parameters. Could you please rephrase your request?",
+                  tool_calls: []
+                })
+              }
+            } catch (error) {
+              console.error('ERROR: Failed to retry with LLM:', error)
+              // Fall back to generic error message
+              addMessage({
+                role: 'assistant',
+                content: "I encountered some technical difficulties while trying to access the tools to help with your request. Please try asking your question again, or let me know if you'd like me to help in a different way.",
+                tool_calls: []
+              })
+            }
+          } else {
+            // No validation failures, just regular errors - provide user-friendly error message
+            try {
+              addMessage({
+                role: 'assistant',
+                content: "I encountered some technical difficulties while trying to access the tools to help with your request. Please try asking your question again, or let me know if you'd like me to help in a different way.",
+                tool_calls: []
+              })
+            } catch (error) {
+              console.error('ERROR: Failed to add error message:', error)
+              toast({
+                title: "Critical Error",
+                description: "Unable to process your request. Please refresh the page and try again.",
+                variant: "destructive",
+              })
+            }
+          }
+          
+          return
+          
+        } else {
+          // Some or all tools succeeded - proceed with normal flow
+          const conversationWithSuccessfulTools = [
+            ...messages.slice(0, -1), // All messages except the last user message
+            {
+              id: assistantMessageId,
+              role: 'assistant' as const,
+              content: '',
+              timestamp: new Date(),
+              toolCalls: currentToolCalls
+            }
+          ]
+          
+          // Add tool result messages for successful tools
+          for (const tc of successfulToolCalls) {
+            if (tc.result) {
+              const toolResultContent = extractAndCleanToolContent(tc.result, tc.name)
+              conversationWithSuccessfulTools.push({
+                id: `tool-result-${tc.id}`,
+                role: 'tool' as const,
+                content: toolResultContent,
+                timestamp: new Date(),
+                tool_call_id: tc.id
+              })
+            }
+          }
+          
+          console.log('📨 Sending tool results to LLM for final response...')
+          console.log('📋 Conversation length:', conversationWithSuccessfulTools.length)
+          
+          const maxAttempts = 3
+          let apiCallAttempts = 0
+          
+          while (apiCallAttempts < maxAttempts) {
+            apiCallAttempts++
+            
+            try {
+              console.log(`📞 API call attempt ${apiCallAttempts}...`)
+              
+              const finalResponse = await api.chat({
+                message: "",
+                conversation_history: conversationWithSuccessfulTools,
+                llm_config_id: activeLLMConfig.id,
+                exclude_tools: true  // CRITICAL: Prevent LLM from making more tool calls
+              })
+              
+              console.log('📥 Final LLM response received:', {
+                hasResponse: !!finalResponse.response,
+                responseLength: finalResponse.response?.length || 0,
+                responsePreview: finalResponse.response?.substring(0, 100) + '...',
+                hasToolCalls: !!finalResponse.tool_calls?.length,
+                fullResponse: finalResponse
+              })
+              
+              // Check if LLM incorrectly returned tool calls in final response
+              if (finalResponse.tool_calls && finalResponse.tool_calls.length > 0) {
+                console.error('❌ CRITICAL: LLM returned tool calls in final response despite exclude_tools=true!')
+                console.error('❌ Tool calls returned:', finalResponse.tool_calls)
+                
+                // Force a response without tool calls
+                finalResponse.tool_calls = []
+                if (!finalResponse.response || finalResponse.response.trim() === '') {
+                  finalResponse.response = "I've gathered the information you requested using tools, but I'm having difficulty generating a final response. The tool results should be visible above."
+                }
+              }
+              
+              // Break out of retry loop if successful
+              break
+              
+            } catch (apiError) {
+              console.error(`❌ API call attempt ${apiCallAttempts} failed:`, apiError)
+              
+              if (apiCallAttempts >= maxAttempts) {
+                throw apiError // Re-throw after max attempts
+              }
+              
+              // Wait before retry
+              await new Promise(resolve => setTimeout(resolve, 1000))
+            }
+          }
+
+          console.log('💬 Adding final assistant message to UI...')
+          try {
+            const finalMessageResult = addMessage({
+              role: 'assistant',
+              content: finalResponse.response || "I was able to gather the information using tools, but I'm having trouble generating a response. Please try asking your question again.",
+              tool_calls: []
+            })
+            console.log('✅ Final message added successfully:', finalMessageResult)
+          } catch (addMessageError) {
+            console.error('❌ CRITICAL: Failed to add final message to UI:', addMessageError)
+            toast({
+              title: "Message Display Error",
+              description: "Got a response but couldn't display it. Please try again.",
+              variant: "destructive",
+            })
+          }
+        }
+      } catch (error) {
+        console.error('❌ CRITICAL: Failed to process tool results:', error)
+        
+        try {
+          addMessage({
+            role: 'assistant',
+            content: "I encountered unexpected difficulties while processing your request. Please try again, and if the problem persists, try rephrasing your question.",
+            tool_calls: []
+          })
+        } catch (addError) {
+          console.error('ERROR: Failed to add fallback message:', addError)
+          toast({
+            title: "Critical Error",
+            description: "Unable to process your request. Please refresh the page and try again.",
+            variant: "destructive",
+          })
+        }
+      }
+    }
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -299,490 +641,7 @@ export function ChatInterfaceSimple() {
 
       // Execute tool calls if any
       if (toolCalls.length > 0) {
-        let allToolsCompleted = true
-        let currentToolCalls = [...toolCalls] // Track updated tool calls
-        
-        try {
-          // Process tool calls sequentially
-          for (const toolCall of toolCalls) {
-            try {
-              // Find the server that has this tool
-              const servers = await api.getMCPServers()
-              let targetServerId = null
-              for (const server of servers) {
-                const serverDetails = await api.getMCPServerWithTools(server.id)
-                if (serverDetails.tools.some((tool: any) => tool.name === toolCall.name && tool.is_enabled)) {
-                  targetServerId = server.id
-                  break
-                }
-              }
-
-              if (targetServerId) {
-                const toolResult = await api.callTool({
-                  tool_name: toolCall.name,
-                  parameters: toolCall.parameters,
-                  server_id: targetServerId
-                })
-
-                // Update tool call status in both arrays
-                const updatedToolCalls = currentToolCalls.map(tc => 
-                  tc.id === toolCall.id 
-                    ? { 
-                        ...tc, 
-                        status: toolResult.success ? 'completed' as const : 'error' as const,
-                        result: toolResult.success ? toolResult.result : toolResult.error
-                      }
-                    : tc
-                )
-                
-                // Log tool execution result
-                if (toolResult.success) {
-                  console.log(`✅ Tool ${toolCall.name} completed successfully`)
-                } else {
-                  console.log(`❌ Tool ${toolCall.name} failed: ${toolResult.error}`)
-                }
-                
-                currentToolCalls = updatedToolCalls // Update our tracking array
-                updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
-                
-                // If tool failed, mark as not all completed
-                if (!toolResult.success) {
-                  allToolsCompleted = false
-                }
-              } else {
-                // Tool not found - update status
-                const updatedToolCalls = currentToolCalls.map(tc => 
-                  tc.id === toolCall.id 
-                    ? { 
-                        ...tc, 
-                        status: 'error' as const,
-                        result: 'Tool not found or disabled'
-                      }
-                    : tc
-                )
-                
-                currentToolCalls = updatedToolCalls // Update our tracking array
-                updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
-                allToolsCompleted = false
-              }
-            } catch (error) {
-              console.error('ERROR: Individual tool execution failed:', error)
-              
-              // Update tool call with error status
-              const updatedToolCalls = currentToolCalls.map(tc => 
-                tc.id === toolCall.id 
-                  ? { 
-                      ...tc, 
-                      status: 'error' as const,
-                      result: error instanceof Error ? error.message : 'Unknown error'
-                    }
-                  : tc
-              )
-              
-              currentToolCalls = updatedToolCalls // Update our tracking array
-              updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
-              allToolsCompleted = false
-              
-              toast({
-                title: "Tool Error",
-                description: `${toolCall.name} failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-                variant: "destructive",
-              })
-            }
-          }
-        } catch (error) {
-          console.error('ERROR: Critical failure in tool execution loop:', error)
-          
-          // Mark all remaining tools as failed
-          currentToolCalls = currentToolCalls.map(tc => 
-            tc.status === 'pending' ? { ...tc, status: 'error' as const, result: 'Tool execution interrupted' } : tc
-          )
-          updateMessage(assistantMessageId, { tool_calls: currentToolCalls })
-          allToolsCompleted = false
-          
-          toast({
-            title: "Tool Execution Error",
-            description: "Critical failure during tool processing",
-            variant: "destructive",
-          })
-        }
-        
-        // After all tools are executed, process results and continue conversation
-        
-        if (currentToolCalls.length > 0) {
-          try {
-            // Filter tool calls that have actual successful results (exclude errors)
-            const successfulToolCalls = currentToolCalls.filter(tc => {
-              if (tc.status !== 'completed' || !tc.result) {
-                return false
-              }
-              
-              // Check if this is an error response - exclude error responses
-              if (tc.result && tc.result.error && tc.result.jsonrpc) {
-                return false
-              }
-              
-              // Also check nested structures for other error formats
-              let mcpResult = null
-              if (tc.result.result && tc.result.result.result) {
-                mcpResult = tc.result.result.result
-              } else if (tc.result.result) {
-                mcpResult = tc.result.result
-              } else {
-                mcpResult = tc.result
-              }
-              
-              if (mcpResult.error || (mcpResult.jsonrpc && mcpResult.error)) {
-                return false
-              }
-              
-              // Check if we have any usable content in the successful result
-              let hasContent = false
-              if (tc.result.result) {
-                const mcpResponseResult = tc.result.result
-                hasContent = !!(mcpResponseResult.content || mcpResponseResult.structuredContent || mcpResponseResult.result)
-              } else if (tc.result.content || tc.result.structuredContent) {
-                hasContent = true
-              } else {
-                hasContent = typeof tc.result === 'object' && Object.keys(tc.result).length > 0
-              }
-              
-              return hasContent
-            })
-            
-            // Process based on success/failure outcomes
-            if (successfulToolCalls.length === 0) {
-              // All tools failed - check if any are validation errors that can be retried
-              const validationFailures = currentToolCalls.filter(tc => 
-                tc.status === 'error' && isValidationError(String(tc.result))
-              )
-              
-              console.log('ERROR: All tools failed. Tool errors:', currentToolCalls.map(tc => ({
-                name: tc.name, 
-                status: tc.status, 
-                error: tc.result
-              })))
-              
-              if (validationFailures.length > 0) {
-                // We have validation failures - ask LLM to retry with error context
-                console.log('INFO: Detected validation failures, asking LLM to retry:', validationFailures.map(tc => tc.name))
-                
-                const errorDescriptions = validationFailures.map(tc => 
-                  `Tool "${tc.name}" failed with validation error: ${tc.result}. Please retry this tool call with the correct parameters.`
-                ).join('\n\n')
-                
-                try {
-                  // Create conversation history for LLM retry
-                  const retryHistory = [
-                    ...messages.slice(0, -1), // All messages except the last one
-                    // Add the assistant message with the failed tool calls
-                    {
-                      id: assistantMessageId,
-                      role: 'assistant' as const,
-                      content: '',
-                      timestamp: new Date(),
-                      toolCalls: currentToolCalls
-                    },
-                    // Add a message describing the validation failures
-                    {
-                      id: `retry-context-${Date.now()}`,
-                      role: 'user' as const,
-                      content: `The previous tool calls failed with validation errors:\n\n${errorDescriptions}\n\nPlease retry the failed tool calls with the correct parameters based on the error messages.`,
-                      timestamp: new Date()
-                    }
-                  ]
-                  
-                  console.log('INFO: Sending retry request to LLM...')
-                  
-                  // Ask LLM to retry with tool calling enabled
-                  const retryResponse = await api.chat({
-                    message: '',
-                    conversation_history: retryHistory,
-                    llm_config_id: activeLLMConfig?.id
-                  })
-                  
-                  if (retryResponse.tool_calls && retryResponse.tool_calls.length > 0) {
-                    console.log('INFO: LLM provided retry tool calls, continuing execution...')
-                    
-                    // Start the tool execution process again with the retry tool calls
-                    const retryAssistantMessageId = addMessage({
-                      role: 'assistant',
-                      content: retryResponse.response || 'Retrying with corrected parameters...',
-                      tool_calls: []
-                    })
-                    
-                    // Execute the retry tool calls (recursively call the same logic)
-                    executeToolCalls(retryResponse.tool_calls, retryAssistantMessageId)
-                    return
-                  } else {
-                    // LLM didn't provide tool calls, treat as final response
-                    addMessage({
-                      role: 'assistant',
-                      content: retryResponse.response || "I apologize, but I'm having trouble with the tool parameters. Could you please rephrase your request?",
-                      tool_calls: []
-                    })
-                  }
-                } catch (error) {
-                  console.error('ERROR: Failed to retry with LLM:', error)
-                  // Fall back to generic error message
-                  addMessage({
-                    role: 'assistant',
-                    content: "I encountered some technical difficulties while trying to access the tools to help with your request. Please try asking your question again, or let me know if you'd like me to help in a different way.",
-                    tool_calls: []
-                  })
-                }
-              } else {
-                // No validation failures, just regular errors - provide user-friendly error message
-                try {
-                  addMessage({
-                    role: 'assistant',
-                    content: "I encountered some technical difficulties while trying to access the tools to help with your request. Please try asking your question again, or let me know if you'd like me to help in a different way.",
-                    tool_calls: []
-                  })
-                } catch (error) {
-                  console.error('ERROR: Failed to add error message:', error)
-                  toast({
-                    title: "Critical Error",
-                    description: "Unable to process your request. Please refresh the page and try again.",
-                    variant: "destructive",
-                  })
-                }
-              }
-              
-              return
-              
-            } else {
-              // Some or all tools succeeded - proceed with normal flow
-              
-              try {
-                // Add successful tool messages to the store  
-                console.log('📝 Adding', successfulToolCalls.length, 'tool messages to store...')
-                for (const tc of successfulToolCalls) {
-                  const cleanedContent = extractAndCleanToolContent(tc.result, tc.name)
-                  
-                  const toolMessageId = addMessage({
-                    role: 'tool',
-                    content: cleanedContent,
-                    tool_call_id: tc.id
-                  })
-                  console.log(`📝 Added tool message ${tc.name} with ID:`, toolMessageId)
-                  
-                  // Small delay to prevent ID collisions
-                  await new Promise(resolve => setTimeout(resolve, 1))
-                }
-                
-                // Build proper OpenAI conversation format for LLM processing
-                const cleanConversationHistory = conversationHistory.map(msg => {
-                  if (msg.role === 'assistant' && msg.tool_calls) {
-                    return {
-                      ...msg,
-                      tool_calls: msg.tool_calls.map((tc: any) => ({
-                        id: tc.id,
-                        name: tc.name,
-                        arguments: tc.parameters || tc.arguments
-                      }))
-                    }
-                  } else if (msg.role === 'tool') {
-                    // Ensure tool messages have proper tool_call_id
-                    return {
-                      role: msg.role,
-                      content: msg.content,
-                      tool_call_id: msg.tool_call_id || 'unknown'
-                    }
-                  }
-                  return { role: msg.role, content: msg.content, tool_calls: msg.tool_calls }
-                }).filter(msg => {
-                  // Remove tool messages without proper tool_call_id to prevent OpenAI errors
-                  if (msg.role === 'tool' && (!msg.tool_call_id || msg.tool_call_id === 'unknown')) {
-                    return false
-                  }
-                  return true
-                })
-
-                // Build conversation with only successful tool results
-                const conversationWithSuccessfulTools = [
-                  ...cleanConversationHistory,
-                  {
-                    role: 'user' as const,
-                    content: userMessage,
-                    tool_calls: undefined
-                  },
-                  {
-                    role: 'assistant' as const,
-                    content: response.response,
-                    tool_calls: successfulToolCalls.map(tc => ({
-                      id: tc.id,
-                      name: tc.name,
-                      arguments: tc.parameters
-                    }))
-                  },
-                  // Add only successful tool results as tool messages
-                  ...successfulToolCalls.map(tc => {
-                    const cleanedContent = extractAndCleanToolContent(tc.result, tc.name)
-                    
-                    return {
-                      role: 'tool' as const,
-                      content: cleanedContent,
-                      tool_call_id: tc.id
-                    }
-                  }),
-                  // Add a system message to guide the LLM to provide a final answer
-                  {
-                    role: 'user' as const,
-                    content: "Based on the tool results above, please provide a complete answer to my original question."
-                  }
-                ]
-                
-                // Send to LLM for final response
-                console.log('🔄 Starting final LLM processing with', conversationWithSuccessfulTools.length, 'messages')
-                console.log('📤 Making final API call to LLM...')
-                
-                let finalResponse
-                let apiCallAttempts = 0
-                const maxAttempts = 2
-                
-                while (apiCallAttempts < maxAttempts) {
-                  try {
-                    apiCallAttempts++
-                    console.log(`📤 API call attempt ${apiCallAttempts}/${maxAttempts}`)
-                    
-                    finalResponse = await api.chat({
-                      message: "",
-                      conversation_history: conversationWithSuccessfulTools,
-                      llm_config_id: activeLLMConfig.id,
-                      exclude_tools: true  // CRITICAL: Prevent LLM from making more tool calls
-                    })
-                    
-                    console.log('📥 Final LLM response received:', {
-                      hasResponse: !!finalResponse.response,
-                      responseLength: finalResponse.response?.length || 0,
-                      responsePreview: finalResponse.response?.substring(0, 100) + '...',
-                      hasToolCalls: !!finalResponse.tool_calls?.length,
-                      fullResponse: finalResponse
-                    })
-                    
-                    // Check if LLM incorrectly returned tool calls in final response
-                    if (finalResponse.tool_calls && finalResponse.tool_calls.length > 0) {
-                      console.error('❌ CRITICAL: LLM returned tool calls in final response despite exclude_tools=true!')
-                      console.error('❌ Tool calls returned:', finalResponse.tool_calls)
-                      
-                      // Force a response without tool calls
-                      finalResponse.tool_calls = []
-                      if (!finalResponse.response || finalResponse.response.trim() === '') {
-                        finalResponse.response = "I've gathered the information you requested using tools, but I'm having difficulty generating a final response. The tool results should be visible above."
-                      }
-                    }
-                    
-                    // Break out of retry loop if successful
-                    break
-                    
-                  } catch (apiError) {
-                    console.error(`❌ API call attempt ${apiCallAttempts} failed:`, apiError)
-                    
-                    if (apiCallAttempts >= maxAttempts) {
-                      throw apiError // Re-throw after max attempts
-                    }
-                    
-                    // Wait before retry
-                    await new Promise(resolve => setTimeout(resolve, 1000))
-                  }
-                }
-
-                console.log('💬 Adding final assistant message to UI...')
-                try {
-                  const finalMessageResult = addMessage({
-                    role: 'assistant',
-                    content: finalResponse.response || "I was able to gather the information using tools, but I'm having trouble generating a response. Please try asking your question again.",
-                    tool_calls: []
-                  })
-                  console.log('✅ Final message added successfully:', finalMessageResult)
-                } catch (addMessageError) {
-                  console.error('❌ CRITICAL: Failed to add final message to UI:', addMessageError)
-                  toast({
-                    title: "Message Display Error",
-                    description: "Got a response but couldn't display it. Please try again.",
-                    variant: "destructive",
-                  })
-                  // Try to add a simple fallback message
-                  try {
-                    addMessage({
-                      role: 'assistant',
-                      content: "I processed your request but encountered a display issue. Please try your question again.",
-                      tool_calls: []
-                    })
-                  } catch (fallbackError) {
-                    console.error('❌ CRITICAL: Even fallback message failed:', fallbackError)
-                  }
-                }
-                
-              } catch (error) {
-                console.error('❌ CRITICAL: Failed to process successful tool results:', error)
-                console.error('❌ Error details:', {
-                  errorType: error.constructor.name,
-                  errorMessage: error.message,
-                  errorStack: error.stack
-                })
-                
-                // Determine appropriate fallback message based on error type
-                let fallbackMessage = "I was able to gather some information using tools, but encountered an issue processing the results. Please try your request again."
-                
-                if (error.message?.includes('fetch') || error.message?.includes('network')) {
-                  fallbackMessage = "I gathered information using tools, but had a network issue getting the final response. Please try your question again."
-                } else if (error.message?.includes('timeout')) {
-                  fallbackMessage = "I gathered information using tools, but the response took too long to generate. Please try a simpler version of your question."
-                } else if (error.message?.includes('parse') || error.message?.includes('JSON')) {
-                  fallbackMessage = "I gathered information using tools, but encountered a data formatting issue. Please try rephrasing your question."
-                }
-                
-                try {
-                  addMessage({
-                    role: 'assistant',
-                    content: fallbackMessage,
-                    tool_calls: []
-                  })
-                } catch (addError) {
-                  console.error('❌ CRITICAL: Failed to add fallback message:', addError)
-                  toast({
-                    title: "Critical Error",
-                    description: "Unable to display response. Please refresh and try again.",
-                    variant: "destructive",
-                  })
-                }
-                
-                toast({
-                  title: "Processing Error",
-                  description: "Failed to process tool results",
-                  variant: "destructive",
-                })
-              }
-            }
-            
-          } catch (error) {
-            console.error('ERROR: Critical failure in tool result processing:', error)
-            
-            // Provide user-friendly fallback message
-            try {
-              addMessage({
-                role: 'assistant',
-                content: "I encountered unexpected difficulties while processing your request. Please try again, and if the problem persists, try rephrasing your question.",
-                tool_calls: []
-              })
-            } catch (addError) {
-              console.error('ERROR: Failed to add fallback message:', addError)
-              toast({
-                title: "Critical Error",
-                description: "Unable to process your request. Please refresh the page and try again.",
-                variant: "destructive",
-              })
-            }
-            
-            toast({
-              title: "Processing Error",
-              description: "Unexpected error in tool processing",
-              variant: "destructive",
-            })
-          }
-        }
+        await executeToolCalls(toolCalls, assistantMessageId)
       }
 
     } catch (error) {
