@@ -69,7 +69,7 @@ export const useStore = create<ChatStore>()(
   persist(
     (set, get) => ({
       // UI State
-      isDarkMode: false,
+      isDarkMode: true,
       toggleTheme: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
       
       // Chat State (not persisted)
