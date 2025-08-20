@@ -479,8 +479,11 @@ export function ChatInterfaceSimple() {
           
         } else {
           // Some or all tools succeeded - proceed with normal flow
-          // Clean message history for backend compatibility
-          const cleanedMessages = messages.slice(0, -1).map(msg => {
+          // Build proper conversation history including current context
+          const conversationWithSuccessfulTools = []
+          
+          // Add all messages from store (cleaned), which includes the current conversation context
+          for (const msg of messages) {
             // Clean tool calls to remove internal execution data
             let cleanedToolCalls = undefined
             if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -492,28 +495,13 @@ export function ChatInterfaceSimple() {
               }))
             }
             
-            return {
+            conversationWithSuccessfulTools.push({
               role: msg.role,
               content: msg.content,
               tool_calls: cleanedToolCalls,
               tool_call_id: msg.tool_call_id // Preserve tool_call_id for tool messages
-            }
-          })
-          
-          const conversationWithSuccessfulTools = [
-            ...cleanedMessages,
-            {
-              id: assistantMessageId,
-              role: 'assistant' as const,
-              content: '',
-              timestamp: new Date(),
-              tool_calls: currentToolCalls.map(tc => ({
-                id: tc.id,
-                name: tc.name,
-                arguments: tc.parameters
-              }))
-            }
-          ]
+            })
+          }
           
           // Add tool result messages to main store and conversation history
           for (const tc of successfulToolCalls) {
