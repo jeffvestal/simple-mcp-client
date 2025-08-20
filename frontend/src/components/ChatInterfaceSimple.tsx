@@ -647,6 +647,49 @@ export function ChatInterfaceSimple() {
             }
           }
           
+          // CRITICAL: Add tool response messages for ALL non-successful tools
+          // to satisfy OpenAI API requirement that every tool_call must have a response
+          const nonSuccessfulToolCalls = currentToolCalls.filter(tc => {
+            // Include any tool that wasn't in the successful list
+            return !successfulToolCalls.some(stc => stc.id === tc.id)
+          })
+          
+          console.log(`📝 Adding error responses for ${nonSuccessfulToolCalls.length} failed/empty tools`)
+          
+          for (const tc of nonSuccessfulToolCalls) {
+            // Determine appropriate error message based on status
+            let errorContent: string
+            
+            if (tc.status === 'error') {
+              // Explicit error occurred
+              errorContent = `Error executing ${tc.name}: ${tc.result || 'Unknown error occurred'}`
+            } else if (tc.status === 'completed') {
+              // Tool completed but had no usable content
+              errorContent = `Tool ${tc.name} completed but returned no usable content`
+            } else {
+              // Tool is still pending or in unknown state (shouldn't happen but handle gracefully)
+              errorContent = `Tool ${tc.name} did not complete successfully (status: ${tc.status})`
+            }
+            
+            // Add to main message store for conversation history persistence
+            addMessage({
+              role: 'tool',
+              content: errorContent,
+              tool_call_id: tc.id
+            })
+            
+            // Add to current conversation for final LLM call
+            conversationWithSuccessfulTools.push({
+              id: `tool-response-${tc.id}`,
+              role: 'tool' as const,
+              content: errorContent,
+              timestamp: new Date(),
+              tool_call_id: tc.id
+            })
+            
+            console.log(`📝 Added error response for tool ${tc.name} (${tc.id}): ${errorContent.substring(0, 50)}...`)
+          }
+          
           console.log('🔍 DEBUG: Final conversation to be sent to LLM API:', conversationWithSuccessfulTools.length)
           conversationWithSuccessfulTools.forEach((msg, idx) => {
             console.log(`🔍 FINAL[${idx}]: ${msg.role} - "${msg.content?.substring(0, 30)}..." - tool_calls: ${msg.tool_calls?.length || 0} - tool_call_id: ${msg.tool_call_id || 'none'}`)
