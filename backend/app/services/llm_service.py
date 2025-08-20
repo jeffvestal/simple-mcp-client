@@ -6,11 +6,12 @@ from ..models.schemas import ChatMessage, LLMProvider
 import json
 
 class LLMService:
-    def __init__(self, provider: LLMProvider, api_key: str, model: str, base_url: Optional[str] = None):
+    def __init__(self, provider: LLMProvider, api_key: str, model: str, base_url: Optional[str] = None, max_tokens: int = 16000):
         self.provider = provider
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
+        self.max_tokens = max_tokens
         
         if provider == LLMProvider.OPENAI:
             # Remove trailing /chat/completions from base_url if present
@@ -97,7 +98,7 @@ class LLMService:
         kwargs = {
             "model": self.model,  # Use configured model
             "messages": openai_messages,
-            "max_tokens": 1000,
+            "max_tokens": self.max_tokens,
             "temperature": 0.7
         }
         
@@ -143,7 +144,7 @@ class LLMService:
         
         body = json.dumps({
             "prompt": f"\n\nHuman: {prompt}\n\nAssistant:",
-            "max_tokens_to_sample": 1000,
+            "max_tokens_to_sample": self.max_tokens,
             "temperature": 0.7,
             "stop_sequences": ["\n\nHuman:"]
         })

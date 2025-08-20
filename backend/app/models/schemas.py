@@ -13,6 +13,7 @@ class LLMConfigCreate(BaseModel):
     api_key: str
     provider: LLMProvider
     model: str
+    max_tokens: int = 16000
 
 class LLMConfig(BaseModel):
     id: int
@@ -21,6 +22,10 @@ class LLMConfig(BaseModel):
     provider: LLMProvider
     model: str
     is_active: bool
+    max_tokens: int
+
+class LLMConfigUpdate(BaseModel):
+    max_tokens: int
 
 class MCPServerCreate(BaseModel):
     name: str

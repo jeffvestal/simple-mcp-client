@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Dict, Any, Tuple
 from ..core.database import Database
 from ..models.schemas import (
-    LLMConfigCreate, LLMConfig, MCPServerCreate, MCPServer, MCPServerWithTools,
+    LLMConfigCreate, LLMConfig, LLMConfigUpdate, MCPServerCreate, MCPServer, MCPServerWithTools,
     MCPServerToggle, ChatRequest, ChatResponse, ChatMessage, ToolCallRequest, ToolCallResponse
 )
 from ..services.mcp_client import mcp_client
@@ -24,7 +24,7 @@ async def health_check():
 @router.post("/llm/config", response_model=Dict[str, Any])
 async def create_llm_config(config: LLMConfigCreate, db: Database = Depends(get_db)):
     try:
-        config_id = db.add_llm_config(config.name, config.url, config.api_key, config.provider.value, config.model)
+        config_id = db.add_llm_config(config.name, config.url, config.api_key, config.provider.value, config.model, config.max_tokens)
         return {"id": config_id, "message": "LLM configuration created successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -43,6 +43,14 @@ async def delete_llm_config(config_id: int, db: Database = Depends(get_db)):
     try:
         db.delete_llm_config(config_id)
         return {"message": "LLM configuration deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.put("/llm/config/{config_id}")
+async def update_llm_config(config_id: int, update: LLMConfigUpdate, db: Database = Depends(get_db)):
+    try:
+        db.update_llm_max_tokens(config_id, update.max_tokens)
+        return {"message": "LLM configuration updated successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -336,7 +344,8 @@ async def chat(request: ChatRequest, db: Database = Depends(get_db)):
             provider=config["provider"],
             api_key=config_with_key["api_key"],
             model=config_with_key.get("model", "gpt-4o"),  # Use model from config_with_key
-            base_url=config["url"]
+            base_url=config["url"],
+            max_tokens=config_with_key.get("max_tokens", 16000)  # Use max_tokens from config
         )
         
         # Get available tools from enabled MCP servers (unless excluded for final responses)

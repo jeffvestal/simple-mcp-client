@@ -86,6 +86,13 @@ class APIClient {
     })
   }
 
+  async updateLLMConfig(configId: number, updates: any) {
+    return this.request(`/llm/config/${configId}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    })
+  }
+
   // MCP Server endpoints
   async createMCPServer(server: any) {
     return this.request('/mcp/servers', {

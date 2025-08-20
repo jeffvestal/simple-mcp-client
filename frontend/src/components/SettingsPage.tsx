@@ -17,6 +17,7 @@ interface LLMFormData {
   api_key: string
   provider: 'openai' | 'gemini' | 'bedrock'
   model: string
+  max_tokens: number
 }
 
 interface MCPFormData {
@@ -45,7 +46,8 @@ export function SettingsPage() {
     url: '',
     api_key: '',
     provider: 'openai',
-    model: 'gpt-4o'
+    model: 'gpt-4o',
+    max_tokens: 16000
   })
 
   const [mcpForm, setMCPForm] = useState<MCPFormData>({
@@ -64,6 +66,8 @@ export function SettingsPage() {
   const [serverTools, setServerTools] = useState<Map<number, any[]>>(new Map())
   const [loadingTools, setLoadingTools] = useState<Set<number>>(new Set())
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
+  const [expandedLLMConfigs, setExpandedLLMConfigs] = useState<Set<number>>(new Set())
+  const [updatingMaxTokens, setUpdatingMaxTokens] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     loadConfigurations()
@@ -159,7 +163,7 @@ export function SettingsPage() {
     try {
       await api.createLLMConfig(llmForm)
       await loadConfigurations()
-      setLLMForm({ name: '', url: '', api_key: '', provider: 'openai', model: 'gpt-4o' })
+      setLLMForm({ name: '', url: '', api_key: '', provider: 'openai', model: 'gpt-4o', max_tokens: 16000 })
       toast({
         title: "Success",
         description: "LLM configuration created successfully",
@@ -404,6 +408,40 @@ export function SettingsPage() {
     setExpandedServers(newExpanded)
   }
 
+  const toggleLLMConfigExpanded = (configId: number) => {
+    const newExpanded = new Set(expandedLLMConfigs)
+    if (newExpanded.has(configId)) {
+      newExpanded.delete(configId)
+    } else {
+      newExpanded.add(configId)
+    }
+    setExpandedLLMConfigs(newExpanded)
+  }
+
+  const handleUpdateMaxTokens = async (configId: number, maxTokens: number) => {
+    setUpdatingMaxTokens(prev => new Set(prev.add(configId)))
+    try {
+      await api.updateLLMConfig(configId, { max_tokens: maxTokens })
+      await loadConfigurations()
+      toast({
+        title: "Success",
+        description: "Max tokens updated successfully",
+      })
+    } catch (error) {
+      toast({
+        title: "Update Error",
+        description: "Failed to update max tokens",
+        variant: "destructive",
+      })
+    } finally {
+      setUpdatingMaxTokens(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(configId)
+        return newSet
+      })
+    }
+  }
+
   return (
     <div className="container mx-auto p-6 space-y-8">
       <div className="flex items-center justify-between">
@@ -478,6 +516,18 @@ export function SettingsPage() {
                 placeholder="sk-..."
               />
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="llm-max-tokens">Max Tokens</Label>
+              <Input
+                id="llm-max-tokens"
+                type="number"
+                value={llmForm.max_tokens}
+                onChange={(e) => setLLMForm({ ...llmForm, max_tokens: parseInt(e.target.value) || 16000 })}
+                placeholder="16000"
+                min="1000"
+                max="100000"
+              />
+            </div>
             <Button type="submit" disabled={isLoading}>
               Add Configuration
             </Button>
@@ -489,43 +539,101 @@ export function SettingsPage() {
               <Label>Configurations</Label>
               <div className="space-y-2">
                 {llmConfigs.map((config: any) => (
-                  <div key={config.id} className="flex items-center justify-between p-3 border rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2 h-2 rounded-full ${config.is_active ? 'bg-green-500' : 'bg-gray-300'}`} />
-                      <div>
-                        <p className="font-medium">{config.name}</p>
-                        <p className="text-sm text-muted-foreground">{config.provider} • {config.model} • {config.url}</p>
+                  <Card key={config.id} className="p-0">
+                    <Collapsible
+                      open={expandedLLMConfigs.has(config.id)}
+                      onOpenChange={() => toggleLLMConfigExpanded(config.id)}
+                    >
+                      <div className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <CollapsibleTrigger className="p-0 hover:bg-transparent">
+                              {expandedLLMConfigs.has(config.id) ? 
+                                <ChevronDown className="h-4 w-4" /> : 
+                                <ChevronRight className="h-4 w-4" />
+                              }
+                            </CollapsibleTrigger>
+                            <div className="flex items-center gap-3">
+                              <div className={`w-2 h-2 rounded-full ${config.is_active ? 'bg-green-500' : 'bg-gray-300'}`} />
+                              <div>
+                                <p className="font-medium">{config.name}</p>
+                                <p className="text-sm text-muted-foreground">{config.provider} • {config.model} • {config.url}</p>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {!config.is_active ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleActivateLLM(config.id)}
+                              >
+                                Activate
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleActivateLLM(config.id)}
+                                className="text-green-600 hover:text-green-700 hover:bg-green-50"
+                              >
+                                Reactivate
+                              </Button>
+                            )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleDeleteLLM(config.id)}
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {!config.is_active ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleActivateLLM(config.id)}
-                        >
-                          Activate
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleActivateLLM(config.id)}
-                          className="text-green-600 hover:text-green-700 hover:bg-green-50"
-                        >
-                          Reactivate
-                        </Button>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleDeleteLLM(config.id)}
-                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
+                      <CollapsibleContent className="px-4 pb-4">
+                        <div className="space-y-4">
+                          <div className="bg-muted/30 p-4 rounded-lg">
+                            <Label className="text-sm font-medium">Token Settings</Label>
+                            <div className="mt-2 flex items-center gap-3">
+                              <div className="flex-1">
+                                <Label htmlFor={`max-tokens-${config.id}`} className="text-sm">Max Tokens per Response</Label>
+                                <Input
+                                  id={`max-tokens-${config.id}`}
+                                  type="number"
+                                  defaultValue={config.max_tokens || 16000}
+                                  min="1000"
+                                  max="100000"
+                                  className="mt-1"
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      const input = e.target as HTMLInputElement
+                                      const newValue = parseInt(input.value) || 16000
+                                      handleUpdateMaxTokens(config.id, newValue)
+                                    }
+                                  }}
+                                />
+                              </div>
+                              <Button
+                                size="sm"
+                                disabled={updatingMaxTokens.has(config.id)}
+                                onClick={() => {
+                                  const input = document.getElementById(`max-tokens-${config.id}`) as HTMLInputElement
+                                  const newValue = parseInt(input.value) || 16000
+                                  handleUpdateMaxTokens(config.id, newValue)
+                                }}
+                              >
+                                {updatingMaxTokens.has(config.id) ? 'Updating...' : 'Update'}
+                              </Button>
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              Controls the maximum length of LLM responses. Higher values allow longer responses but cost more tokens.
+                            </p>
+                          </div>
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
+                  </Card>
                 ))}
               </div>
             </div>

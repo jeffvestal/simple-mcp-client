@@ -32,6 +32,12 @@ class Database:
             
             # Add model column to existing tables if it doesn't exist
             try:
+                cursor.execute("ALTER TABLE llm_configs ADD COLUMN max_tokens INTEGER DEFAULT 16000")
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+            
+            try:
                 cursor.execute("ALTER TABLE llm_configs ADD COLUMN model TEXT DEFAULT 'gpt-3.5-turbo'")
             except sqlite3.OperationalError:
                 # Column already exists
@@ -123,20 +129,20 @@ class Database:
         return base64.b64decode(encoded_key.encode()).decode()
     
     # LLM Configuration methods
-    def add_llm_config(self, name: str, url: str, api_key: str, provider: str, model: str) -> int:
+    def add_llm_config(self, name: str, url: str, api_key: str, provider: str, model: str, max_tokens: int = 16000) -> int:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             api_key_encoded = self.encode_api_key(api_key)
             cursor.execute("""
-                INSERT INTO llm_configs (name, url, api_key_hash, provider, model)
-                VALUES (?, ?, ?, ?, ?)
-            """, (name, url, api_key_encoded, provider, model))
+                INSERT INTO llm_configs (name, url, api_key_hash, provider, model, max_tokens)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (name, url, api_key_encoded, provider, model, max_tokens))
             return cursor.lastrowid
     
     def get_llm_configs(self) -> List[Dict]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, name, url, provider, model, is_active FROM llm_configs")
+            cursor.execute("SELECT id, name, url, provider, model, is_active, max_tokens FROM llm_configs")
             return [dict(zip([col[0] for col in cursor.description], row)) for row in cursor.fetchall()]
     
     def set_active_llm(self, config_id: int):
@@ -150,11 +156,16 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM llm_configs WHERE id = ?", (config_id,))
     
+    def update_llm_max_tokens(self, config_id: int, max_tokens: int):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE llm_configs SET max_tokens = ? WHERE id = ?", (max_tokens, config_id))
+    
     def get_llm_config_with_key(self, config_id: int) -> Optional[Dict]:
         """Get LLM config including decoded API key for service initialization"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, name, url, api_key_hash, provider, model, is_active FROM llm_configs WHERE id = ?", (config_id,))
+            cursor.execute("SELECT id, name, url, api_key_hash, provider, model, is_active, max_tokens FROM llm_configs WHERE id = ?", (config_id,))
             row = cursor.fetchone()
             if row:
                 config = dict(zip([col[0] for col in cursor.description], row))
