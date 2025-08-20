@@ -63,6 +63,7 @@ export function SettingsPage() {
   const [expandedServers, setExpandedServers] = useState<Set<number>>(new Set())
   const [serverTools, setServerTools] = useState<Map<number, any[]>>(new Map())
   const [loadingTools, setLoadingTools] = useState<Set<number>>(new Set())
+  const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
 
   useEffect(() => {
     loadConfigurations()
@@ -303,11 +304,15 @@ export function SettingsPage() {
     }
   }
 
-  const handleServerDelete = async (serverId: number) => {
-    if (!confirm('Are you sure you want to delete this server?')) return
+  const handleServerDelete = (serverId: number) => {
+    setDeleteConfirm(serverId)
+  }
+
+  const confirmServerDelete = async () => {
+    if (deleteConfirm === null) return
 
     try {
-      await api.deleteMCPServer(serverId)
+      await api.deleteMCPServer(deleteConfirm)
       await loadConfigurations()
       toast({
         title: "Success",
@@ -319,6 +324,8 @@ export function SettingsPage() {
         description: "Failed to delete server",
         variant: "destructive",
       })
+    } finally {
+      setDeleteConfirm(null)
     }
   }
 
@@ -763,6 +770,36 @@ export function SettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Confirmation Dialog */}
+      {deleteConfirm !== null && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <Card className="w-96">
+            <CardHeader>
+              <CardTitle>Confirm Delete</CardTitle>
+              <CardDescription>
+                Are you sure you want to delete this server? This action cannot be undone.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex justify-end space-x-3">
+                <Button 
+                  variant="outline" 
+                  onClick={() => setDeleteConfirm(null)}
+                >
+                  Cancel
+                </Button>
+                <Button 
+                  variant="destructive" 
+                  onClick={confirmServerDelete}
+                >
+                  Delete
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   )
 }
