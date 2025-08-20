@@ -66,6 +66,9 @@ class MCPTool(BaseModel):
 class MCPServerWithTools(MCPServer):
     tools: List[MCPTool] = []
 
+class MCPServerToggle(BaseModel):
+    enabled: bool
+
 class ChatMessage(BaseModel):
     role: str  # "user", "assistant", or "tool"
     content: str

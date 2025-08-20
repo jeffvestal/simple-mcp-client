@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Tuple
 from ..core.database import Database
 from ..models.schemas import (
     LLMConfigCreate, LLMConfig, MCPServerCreate, MCPServer, MCPServerWithTools,
-    ChatRequest, ChatResponse, ChatMessage, ToolCallRequest, ToolCallResponse
+    MCPServerToggle, ChatRequest, ChatResponse, ChatMessage, ToolCallRequest, ToolCallResponse
 )
 from ..services.mcp_client import mcp_client
 from ..services.llm_service import LLMService
@@ -135,9 +135,9 @@ async def get_mcp_server_with_tools(server_id: int, db: Database = Depends(get_d
     return MCPServerWithTools(**server, tools=tools)
 
 @router.post("/mcp/servers/{server_id}/toggle")
-async def toggle_mcp_server(server_id: int, enabled: bool, db: Database = Depends(get_db)):
-    db.toggle_server_enabled(server_id, enabled)
-    return {"message": f"Server {'enabled' if enabled else 'disabled'}"}
+async def toggle_mcp_server(server_id: int, toggle_data: MCPServerToggle, db: Database = Depends(get_db)):
+    db.toggle_server_enabled(server_id, toggle_data.enabled)
+    return {"message": f"Server {'enabled' if toggle_data.enabled else 'disabled'}"}
 
 @router.delete("/mcp/servers/{server_id}")
 async def delete_mcp_server(server_id: int, db: Database = Depends(get_db)):
