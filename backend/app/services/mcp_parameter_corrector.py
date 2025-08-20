@@ -180,6 +180,23 @@ class MCPParameterCorrector:
                 confidence=0.9
             )
         
+        # Handle missing query parameter for execute_esql
+        if "query" in error_message and "Required" in error_message:
+            # Common parameter names that might map to 'query'
+            query_aliases = ["esql", "sql", "search", "statement", "command", "expression"]
+            for alias in query_aliases:
+                if alias in params:
+                    corrected_params = params.copy()
+                    corrected_params["query"] = params[alias]
+                    corrected_params.pop(alias)
+                    
+                    return ParameterCorrection(
+                        original_params=params,
+                        corrected_params=corrected_params,
+                        transformation_applied=f"Renamed '{alias}' to required 'query' parameter",
+                        confidence=0.8
+                    )
+        
         # Handle array requirements in general
         if "Required" in error_message and "array" in error_message:
             # Try to extract the required field name
@@ -206,6 +223,34 @@ class MCPParameterCorrector:
                             corrected_params=corrected_params,
                             transformation_applied=f"Converted '{param_name}' to required '{required_field}' array",
                             confidence=0.7
+                        )
+        
+        # Handle general missing required parameters by looking for fuzzy matches
+        if "Required" in error_message and "undefined" in error_message:
+            path_match = re.search(r'"path":\s*\[\s*"([^"]+)"\s*\]', error_message)
+            if path_match:
+                required_field = path_match.group(1)
+                
+                # Look for parameters with similar names
+                for param_name, param_value in params.items():
+                    # Check for partial matches, case-insensitive
+                    param_clean = param_name.lower().replace('_', '').replace('-', '')
+                    required_clean = required_field.lower().replace('_', '').replace('-', '')
+                    
+                    # Check if one is contained in the other or they share significant overlap
+                    if (param_clean in required_clean or required_clean in param_clean or
+                        len(set(param_clean) & set(required_clean)) >= min(3, len(required_clean) // 2)):
+                        
+                        corrected_params = params.copy()
+                        corrected_params[required_field] = param_value
+                        if param_name != required_field:
+                            corrected_params.pop(param_name, None)
+                        
+                        return ParameterCorrection(
+                            original_params=params,
+                            corrected_params=corrected_params,
+                            transformation_applied=f"Renamed '{param_name}' to required '{required_field}'",
+                            confidence=0.6
                         )
         
         return None
