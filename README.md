@@ -5,28 +5,34 @@ A full-stack chat application that connects to LLM providers and utilizes tools 
 
 ## Current State
 
-This application is **fully functional** with the following working features:
+This application is **fully functional and production-ready** with robust error handling:
 
 ✅ **Complete Tool Execution Pipeline**: End-to-end tool calling with LLM follow-up responses  
 ✅ **Smart Error Recovery**: Automatic parameter correction for any MCP server validation errors  
+✅ **Robust Error Handling**: Comprehensive tool failure recovery and OpenAI API compliance  
 ✅ **Professional UI**: Collapsible tool call displays with real-time status indicators  
 ✅ **Multi-LLM Support**: OpenAI, Gemini, and Bedrock compatible APIs  
 ✅ **MCP Server Management**: Remote and local MCP server support with process management  
 ✅ **Real-time Status**: Live connection status and server health monitoring  
 ✅ **Dark/Light Mode**: Persistent theme switching with clean design  
 ✅ **Chat Management**: Clear chat functionality with message history  
+✅ **Conversation History**: Proper OpenAI API compliance for multi-turn tool conversations  
+✅ **Retry Mechanisms**: Intelligent retry logic for validation errors with parameter correction  
 
 ## Features
 
 - **Modern Chat Interface**: Clean UI with markdown support and user/assistant message bubbles
 - **Complete Tool Execution**: Tools are executed with results fed back to LLM for natural responses
 - **Tool Visualization**: Expandable tool call displays showing request/response details with status indicators
+- **Advanced Error Handling**: Automatic recovery from tool failures with intelligent parameter correction
+- **OpenAI API Compliance**: Proper conversation history management for multi-turn tool interactions
 - **MCP Server Integration**: Connect and manage multiple MCP servers with automatic tool discovery
 - **Local & Remote Servers**: Support for both HTTP-based and local process-based MCP servers
 - **Process Management**: Automatic server startup/shutdown with health monitoring
 - **Multi-LLM Support**: OpenAI, Gemini, and Bedrock compatible APIs
 - **Real-time Updates**: Live connection status and server management
 - **Responsive Design**: Works on desktop and mobile devices
+- **Universal MCP Compatibility**: Works with any MCP server through generic error parsing
 
 ## Tech Stack
 
@@ -231,7 +237,23 @@ Auto-start: Yes
 
 ## Security Note
 
-⚠️ **This is a demo application**. API keys are stored with basic hashing for demonstration purposes only. Do not use this in production without implementing proper encryption and security measures.
+⚠️ **This is a demo application** designed for development and testing purposes. Current security considerations:
+
+- API keys are stored with basic hashing (not production-ready encryption)
+- No authentication/authorization system implemented
+- Local MCP servers run with user permissions
+- CORS enabled for development (localhost only)
+- Comprehensive logging may expose sensitive data in development mode
+
+**For production use**, implement:
+- Proper encryption for sensitive data storage
+- User authentication and session management  
+- API rate limiting and input validation
+- Secure MCP server sandboxing
+- Database access controls
+- Audit and sanitize all logging output
+
+See `CLAUDE.md` for detailed security improvement tasks and implementation guidance.
 
 ## Architecture
 
@@ -308,6 +330,25 @@ frontend/
 # Stop both servers  
 ./stop-dev.sh
 ```
+
+### Development Status & Roadmap
+
+The application is fully functional with recent improvements to error handling and OpenAI API compliance. For detailed development plans and improvement tasks, see the comprehensive roadmap in `CLAUDE.md`.
+
+**Recent Improvements (Completed)**:
+- ✅ Fixed critical tool execution errors and OpenAI API compliance issues
+- ✅ Added intelligent parameter correction for MCP validation errors  
+- ✅ Implemented robust retry mechanisms for failed tool calls
+- ✅ Enhanced conversation history management for multi-turn interactions
+- ✅ Added comprehensive error response handling for all tool call scenarios
+
+**Planned Improvements** (organized by priority in `CLAUDE.md`):
+- 🔄 **Week 1 (Critical)**: Code quality fixes, error boundaries, performance logging
+- 🔄 **Week 2 (Architecture)**: Refactor large components, optimize re-renders, add caching
+- 🔄 **Week 3 (UX)**: User-friendly error messages, progress indicators, clean displays  
+- 🔄 **Week 4 (Polish)**: Unit tests, security audit, TypeScript strict mode
+
+**For Contributors**: See `CLAUDE.md` for detailed technical guidance, architecture documentation, and a comprehensive task list with specific file locations and implementation details.
 
 **Manual approach:**
 
