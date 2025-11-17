@@ -39,6 +39,9 @@ export interface LLMConfig {
   url: string
   provider: string
   is_active: boolean
+  model?: string
+  max_tokens?: number
+  system_prompt?: string
 }
 
 interface ChatStore {

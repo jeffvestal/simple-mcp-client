@@ -26,6 +26,7 @@ class Database:
                     provider TEXT NOT NULL,
                     model TEXT NOT NULL DEFAULT 'gpt-3.5-turbo',
                     is_active BOOLEAN DEFAULT FALSE,
+                    system_prompt TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -39,6 +40,12 @@ class Database:
             
             try:
                 cursor.execute("ALTER TABLE llm_configs ADD COLUMN model TEXT DEFAULT 'gpt-3.5-turbo'")
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+            
+            try:
+                cursor.execute("ALTER TABLE llm_configs ADD COLUMN system_prompt TEXT")
             except sqlite3.OperationalError:
                 # Column already exists
                 pass
@@ -129,20 +136,20 @@ class Database:
         return base64.b64decode(encoded_key.encode()).decode()
     
     # LLM Configuration methods
-    def add_llm_config(self, name: str, url: str, api_key: str, provider: str, model: str, max_tokens: int = 16000) -> int:
+    def add_llm_config(self, name: str, url: str, api_key: str, provider: str, model: str, max_tokens: int = 16000, system_prompt: Optional[str] = None) -> int:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             api_key_encoded = self.encode_api_key(api_key)
             cursor.execute("""
-                INSERT INTO llm_configs (name, url, api_key_hash, provider, model, max_tokens)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (name, url, api_key_encoded, provider, model, max_tokens))
+                INSERT INTO llm_configs (name, url, api_key_hash, provider, model, max_tokens, system_prompt)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (name, url, api_key_encoded, provider, model, max_tokens, system_prompt))
             return cursor.lastrowid
     
     def get_llm_configs(self) -> List[Dict]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, name, url, provider, model, is_active, max_tokens FROM llm_configs")
+            cursor.execute("SELECT id, name, url, provider, model, is_active, max_tokens, system_prompt FROM llm_configs")
             return [dict(zip([col[0] for col in cursor.description], row)) for row in cursor.fetchall()]
     
     def set_active_llm(self, config_id: int):
@@ -161,11 +168,16 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("UPDATE llm_configs SET max_tokens = ? WHERE id = ?", (max_tokens, config_id))
     
+    def update_llm_system_prompt(self, config_id: int, system_prompt: Optional[str]):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE llm_configs SET system_prompt = ? WHERE id = ?", (system_prompt, config_id))
+    
     def get_llm_config_with_key(self, config_id: int) -> Optional[Dict]:
         """Get LLM config including decoded API key for service initialization"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, name, url, api_key_hash, provider, model, is_active, max_tokens FROM llm_configs WHERE id = ?", (config_id,))
+            cursor.execute("SELECT id, name, url, api_key_hash, provider, model, is_active, max_tokens, system_prompt FROM llm_configs WHERE id = ?", (config_id,))
             row = cursor.fetchone()
             if row:
                 config = dict(zip([col[0] for col in cursor.description], row))
