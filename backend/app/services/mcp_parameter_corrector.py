@@ -82,17 +82,27 @@ class MCPParameterCorrector:
             path_match = re.search(r'"path":\s*\[\s*"([^"]+)"\s*\]', error_message)
             if path_match:
                 expected_param = path_match.group(1)
+                print(f"[DEBUG] Expected parameter from error: '{expected_param}'")
+                print(f"[DEBUG] Original params keys: {list(params.keys())}")
                 
                 # Look for similar parameter in original params
                 for param_name, param_value in params.items():
+                    print(f"[DEBUG] Checking param '{param_name}' (value: {param_value}) against expected '{expected_param}'")
                     if param_name.lower() in expected_param.lower() or expected_param.lower() in param_name.lower():
+                        print(f"[DEBUG] Match found! Converting '{param_name}' to '{expected_param}' array")
                         # Convert string to array
                         corrected_params = params.copy()
-                        corrected_params[expected_param] = [param_value] if param_value is not None else []
+                        if isinstance(param_value, str):
+                            corrected_params[expected_param] = [param_value]
+                        elif isinstance(param_value, list):
+                            corrected_params[expected_param] = param_value
+                        else:
+                            corrected_params[expected_param] = [param_value] if param_value is not None else []
                         # Remove the old parameter
                         if param_name != expected_param:
                             corrected_params.pop(param_name, None)
                         
+                        print(f"[DEBUG] Corrected params: {corrected_params}")
                         return ParameterCorrection(
                             original_params=params,
                             corrected_params=corrected_params,

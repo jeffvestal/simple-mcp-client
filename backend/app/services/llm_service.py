@@ -126,16 +126,141 @@ class LLMService:
         return result
     
     async def _generate_gemini_response(self, messages: List[ChatMessage], tools: Optional[List[Dict]] = None) -> Dict[str, Any]:
-        """Generate response using Gemini"""
+        """Generate response using Gemini with function calling support"""
+        print(f"[DEBUG GEMINI] Received {len(tools) if tools else 0} tools")
+        if tools:
+            print(f"[DEBUG GEMINI] Tool names: {[t.get('function', {}).get('name') for t in tools]}")
+        
         # Convert messages to Gemini format
-        prompt = "\n".join([f"{msg.role}: {msg.content}" for msg in messages])
+        gemini_messages = []
+        for msg in messages:
+            role = msg.role if hasattr(msg, 'role') else msg.get("role")
+            content = msg.content if hasattr(msg, 'content') else msg.get("content")
+            # Handle tool_calls for both Pydantic models and dicts
+            if hasattr(msg, 'tool_calls'):
+                tool_calls = msg.tool_calls
+            elif isinstance(msg, dict):
+                tool_calls = msg.get("tool_calls")
+            else:
+                tool_calls = None
+            
+            # Map roles to Gemini format
+            if role == "assistant":
+                # Skip assistant messages with only tool calls and no content
+                # Gemini handles tool calls differently
+                if content:
+                    gemini_messages.append({"role": "model", "parts": [{"text": content}]})
+            elif role == "user":
+                if content:  # Only add if content is not empty
+                    gemini_messages.append({"role": "user", "parts": [{"text": content}]})
+            elif role == "tool":
+                # For tool responses, add as user message with context
+                tool_call_id = getattr(msg, 'tool_call_id', None) if hasattr(msg, 'tool_call_id') else msg.get("tool_call_id") if isinstance(msg, dict) else None
+                if content:  # Only add if content is not empty
+                    gemini_messages.append({
+                        "role": "user", 
+                        "parts": [{"text": f"Tool result (id: {tool_call_id}):\n{content}"}]
+                    })
         
-        response = self.client.generate_content(prompt)
+        print(f"[DEBUG GEMINI] Converted {len(gemini_messages)} messages to Gemini format")
         
-        return {
-            "content": response.text,
-            "tool_calls": []  # Basic implementation, can be enhanced for tool calling
+        # Convert tools to Gemini function declarations if provided
+        gemini_tools = None
+        if tools:
+            function_declarations = []
+            for tool in tools:
+                if tool.get("type") == "function":
+                    func = tool.get("function", {})
+                    # Convert OpenAI-style schema to Gemini format
+                    function_declarations.append(
+                        genai.protos.FunctionDeclaration(
+                            name=func.get("name"),
+                            description=func.get("description", ""),
+                            parameters=genai.protos.Schema(
+                                type=genai.protos.Type.OBJECT,
+                                properties={
+                                    k: genai.protos.Schema(
+                                        type=self._map_type_to_gemini(v.get("type", "string")),
+                                        description=v.get("description", "")
+                                    )
+                                    for k, v in func.get("parameters", {}).get("properties", {}).items()
+                                },
+                                required=func.get("parameters", {}).get("required", [])
+                            )
+                        )
+                    )
+            
+            if function_declarations:
+                gemini_tools = genai.protos.Tool(function_declarations=function_declarations)
+                print(f"[DEBUG GEMINI] Created {len(function_declarations)} function declarations")
+        
+        # Generate response with or without tools
+        generation_config = genai.types.GenerationConfig(
+            temperature=0.7,
+            max_output_tokens=self.max_tokens
+        )
+        
+        print(f"[DEBUG GEMINI] Sending to Gemini with tools: {gemini_tools is not None}")
+        
+        # Make sure we have messages to send
+        if not gemini_messages:
+            print("[DEBUG GEMINI] No valid messages to send, returning empty response")
+            return {"content": "I don't have enough context to respond.", "tool_calls": []}
+        
+        # Get the last message content
+        last_message_text = gemini_messages[-1]["parts"][0]["text"]
+        
+        if gemini_tools:
+            chat = self.client.start_chat(history=gemini_messages[:-1] if len(gemini_messages) > 1 else [])
+            response = chat.send_message(
+                last_message_text,
+                tools=[gemini_tools],
+                generation_config=generation_config
+            )
+        else:
+            chat = self.client.start_chat(history=gemini_messages[:-1] if len(gemini_messages) > 1 else [])
+            response = chat.send_message(
+                last_message_text,
+                generation_config=generation_config
+            )
+        
+        # Extract response content and function calls
+        result = {
+            "content": "",
+            "tool_calls": []
         }
+        
+        # Handle text content and function calls
+        if response.candidates and len(response.candidates) > 0:
+            candidate = response.candidates[0]
+            if candidate.content and candidate.content.parts:
+                for part in candidate.content.parts:
+                    # Check for function calls first
+                    if hasattr(part, 'function_call') and part.function_call and part.function_call.name:
+                        fc = part.function_call
+                        # Convert Gemini function call to OpenAI format
+                        result["tool_calls"].append({
+                            "id": f"call_{len(result['tool_calls'])}",
+                            "name": fc.name,
+                            "arguments": dict(fc.args) if fc.args else {}
+                        })
+                    # Check for text content
+                    elif hasattr(part, 'text') and part.text:
+                        result["content"] += part.text
+        
+        return result
+    
+    def _map_type_to_gemini(self, openai_type: str) -> genai.protos.Type:
+        """Map OpenAI JSON schema types to Gemini types"""
+        type_map = {
+            "string": genai.protos.Type.STRING,
+            "number": genai.protos.Type.NUMBER,
+            "integer": genai.protos.Type.INTEGER,
+            "boolean": genai.protos.Type.BOOLEAN,
+            "array": genai.protos.Type.ARRAY,
+            "object": genai.protos.Type.OBJECT
+        }
+        return type_map.get(openai_type.lower(), genai.protos.Type.STRING)
     
     async def _generate_bedrock_response(self, messages: List[ChatMessage], tools: Optional[List[Dict]] = None) -> Dict[str, Any]:
         """Generate response using AWS Bedrock"""
