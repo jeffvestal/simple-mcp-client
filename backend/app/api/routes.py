@@ -24,7 +24,7 @@ async def health_check():
 @router.post("/llm/config", response_model=Dict[str, Any])
 async def create_llm_config(config: LLMConfigCreate, db: Database = Depends(get_db)):
     try:
-        config_id = db.add_llm_config(config.name, config.url, config.api_key, config.provider.value, config.model, config.max_tokens)
+        config_id = db.add_llm_config(config.name, config.url, config.api_key, config.provider.value, config.model, config.max_tokens, config.system_prompt)
         return {"id": config_id, "message": "LLM configuration created successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -49,7 +49,10 @@ async def delete_llm_config(config_id: int, db: Database = Depends(get_db)):
 @router.put("/llm/config/{config_id}")
 async def update_llm_config(config_id: int, update: LLMConfigUpdate, db: Database = Depends(get_db)):
     try:
-        db.update_llm_max_tokens(config_id, update.max_tokens)
+        if update.max_tokens is not None:
+            db.update_llm_max_tokens(config_id, update.max_tokens)
+        if update.system_prompt is not None:
+            db.update_llm_system_prompt(config_id, update.system_prompt)
         return {"message": "LLM configuration updated successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -353,10 +356,14 @@ async def chat(request: ChatRequest, db: Database = Depends(get_db)):
         if not request.exclude_tools:
             print(f"[DEBUG] Including tools in LLM request")
             servers = db.get_mcp_servers()
+            print(f"[DEBUG] Found {len(servers)} MCP servers")
             for server in servers:
+                print(f"[DEBUG] Server: {server['name']}, enabled: {server['is_enabled']}, status: {server['status']}")
                 if server["is_enabled"] and server["status"] == "connected":
                     tools = db.get_server_tools(server["id"])
+                    print(f"[DEBUG] Server {server['name']} has {len(tools)} tools")
                     for tool in tools:
+                        print(f"[DEBUG] Tool: {tool['name']}, enabled: {tool['is_enabled']}")
                         if tool["is_enabled"]:
                             # Parse stored schema or use default
                             try:
@@ -375,12 +382,22 @@ async def chat(request: ChatRequest, db: Database = Depends(get_db)):
                                     "parameters": schema
                                 }
                             })
+            print(f"[DEBUG] Total available_tools collected: {len(available_tools)}")
         else:
             print(f"[DEBUG] Excluding tools from LLM request (final response mode)")
         
         # Generate response
         # Convert conversation history to ChatMessage objects
         chat_messages = []
+        
+        # Add system prompt as the first message if configured
+        system_prompt = config_with_key.get("system_prompt")
+        if system_prompt:
+            chat_messages.append(ChatMessage(
+                role="system",
+                content=system_prompt
+            ))
+        
         for msg in request.conversation_history:
             # Handle both dict and ChatMessage objects
             if isinstance(msg, dict):
@@ -422,6 +439,9 @@ async def chat(request: ChatRequest, db: Database = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        print(f"[ERROR] Chat endpoint error: {str(e)}")
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Tool calling endpoint

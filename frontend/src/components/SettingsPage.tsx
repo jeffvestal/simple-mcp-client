@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -18,6 +19,7 @@ interface LLMFormData {
   provider: 'openai' | 'gemini' | 'bedrock'
   model: string
   max_tokens: number
+  system_prompt: string
 }
 
 interface MCPFormData {
@@ -47,7 +49,8 @@ export function SettingsPage() {
     api_key: '',
     provider: 'openai',
     model: 'gpt-4o',
-    max_tokens: 16000
+    max_tokens: 16000,
+    system_prompt: ''
   })
 
   const [mcpForm, setMCPForm] = useState<MCPFormData>({
@@ -442,6 +445,23 @@ export function SettingsPage() {
     }
   }
 
+  const handleUpdateSystemPrompt = async (configId: number, systemPrompt: string) => {
+    try {
+      await api.updateLLMConfig(configId, { system_prompt: systemPrompt })
+      await loadConfigurations()
+      toast({
+        title: "Success",
+        description: "System prompt updated successfully",
+      })
+    } catch (error) {
+      toast({
+        title: "Update Error",
+        description: "Failed to update system prompt",
+        variant: "destructive",
+      })
+    }
+  }
+
   return (
     <div className="container mx-auto p-6 space-y-8">
       <div className="flex items-center justify-between">
@@ -527,6 +547,20 @@ export function SettingsPage() {
                 min="1000"
                 max="100000"
               />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="llm-system-prompt">System Prompt (optional)</Label>
+              <Textarea
+                id="llm-system-prompt"
+                value={llmForm.system_prompt}
+                onChange={(e) => setLLMForm({ ...llmForm, system_prompt: e.target.value })}
+                placeholder="You are a helpful assistant that..."
+                rows={3}
+                className="resize-y"
+              />
+              <p className="text-xs text-muted-foreground">
+                This prompt will be prepended to every conversation to guide the assistant's behavior.
+              </p>
             </div>
             <Button type="submit" disabled={isLoading}>
               Add Configuration
@@ -629,6 +663,33 @@ export function SettingsPage() {
                             <p className="text-xs text-muted-foreground mt-1">
                               Controls the maximum length of LLM responses. Higher values allow longer responses but cost more tokens.
                             </p>
+                          </div>
+
+                          <div className="bg-muted/30 p-4 rounded-lg">
+                            <Label className="text-sm font-medium">System Prompt</Label>
+                            <div className="mt-2 space-y-2">
+                              <Textarea
+                                id={`system-prompt-${config.id}`}
+                                placeholder="Enter a system prompt to guide the LLM's behavior... (optional)"
+                                defaultValue={config.system_prompt || ''}
+                                rows={4}
+                                className="resize-y"
+                              />
+                              <div className="flex justify-between items-center">
+                                <p className="text-xs text-muted-foreground">
+                                  System prompt is prepended to every conversation to guide the assistant's behavior.
+                                </p>
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    const textarea = document.getElementById(`system-prompt-${config.id}`) as HTMLTextAreaElement
+                                    handleUpdateSystemPrompt(config.id, textarea.value)
+                                  }}
+                                >
+                                  Update
+                                </Button>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </CollapsibleContent>

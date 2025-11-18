@@ -10,6 +10,9 @@ export interface LLMConfigCreate {
   url: string
   api_key: string
   provider: 'openai' | 'gemini' | 'bedrock'
+  model: string
+  max_tokens: number
+  system_prompt?: string
 }
 
 export interface MCPServerCreate {

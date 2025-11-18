@@ -14,6 +14,7 @@ class LLMConfigCreate(BaseModel):
     provider: LLMProvider
     model: str
     max_tokens: int = 16000
+    system_prompt: Optional[str] = None
 
 class LLMConfig(BaseModel):
     id: int
@@ -23,9 +24,11 @@ class LLMConfig(BaseModel):
     model: str
     is_active: bool
     max_tokens: int
+    system_prompt: Optional[str] = None
 
 class LLMConfigUpdate(BaseModel):
-    max_tokens: int
+    max_tokens: Optional[int] = None
+    system_prompt: Optional[str] = None
 
 class MCPServerCreate(BaseModel):
     name: str
