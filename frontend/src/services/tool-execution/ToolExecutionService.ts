@@ -168,12 +168,12 @@ export class ToolExecutionService implements IToolExecutionService {
           currentToolCalls[i] = result.updatedToolCall
           context.toolCalls = currentToolCalls
           
-          // Update UI status - exact original behavior
           this.updateToolExecutionStatus(
             result.updatedToolCall,
             assistantMessageId,
             result.success ? 'completed' : 'error',
-            result.result
+            result.result,
+            currentToolCalls
           )
           
           allToolsCompleted = allToolsCompleted && result.success
@@ -207,7 +207,8 @@ export class ToolExecutionService implements IToolExecutionService {
             currentToolCalls[i],
             assistantMessageId,
             'error',
-            error instanceof Error ? error.message : 'Tool execution failed'
+            error instanceof Error ? error.message : 'Tool execution failed',
+            currentToolCalls
           )
           
           allToolsCompleted = false
@@ -676,7 +677,8 @@ export class ToolExecutionService implements IToolExecutionService {
             result.updatedToolCall,
             newAssistantMessageId,
             result.success ? 'completed' : 'error',
-            result.result
+            result.result,
+            formattedNewToolCalls
           )
         } catch (error) {
           formattedNewToolCalls[i] = {
@@ -688,7 +690,8 @@ export class ToolExecutionService implements IToolExecutionService {
             formattedNewToolCalls[i],
             newAssistantMessageId,
             'error',
-            error instanceof Error ? error.message : 'Tool execution failed'
+            error instanceof Error ? error.message : 'Tool execution failed',
+            formattedNewToolCalls
           )
         }
       }
@@ -973,20 +976,30 @@ export class ToolExecutionService implements IToolExecutionService {
   }
 
   /**
-   * Update UI state during tool execution - exact original behavior
+   * Update UI state during tool execution.
+   *
+   * @param allToolCallsForMessage - the full tool_calls array belonging to
+   *   the assistant message being updated. Passing it explicitly avoids
+   *   reading from this.currentContext which may point to a different round.
    */
   updateToolExecutionStatus(
     toolCall: ToolCall,
     assistantMessageId: string,
     status: 'pending' | 'completed' | 'error',
-    result?: any
+    result?: any,
+    allToolCallsForMessage?: ToolCall[]
   ): void {
     try {
-      // Update the tool call status in the assistant message
       const updatedToolCall = { ...toolCall, status, result }
-      
+
+      const toolCallsToWrite = allToolCallsForMessage
+        ? allToolCallsForMessage.map(tc =>
+            tc.id === toolCall.id ? updatedToolCall : tc
+          )
+        : [updatedToolCall]
+
       this.externalDependencies.messageManager.safeUpdateMessage(assistantMessageId, {
-        tool_calls: this.currentContext?.toolCalls || [updatedToolCall]
+        tool_calls: toolCallsToWrite
       })
       
     } catch (error) {

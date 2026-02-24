@@ -302,6 +302,10 @@ export function ChatInterfaceSimple() {
 
   // Cleanup function to cancel ongoing operations
   useEffect(() => {
+    // Reset mounted flag -- required so that React Strict Mode's
+    // unmount-remount cycle doesn't leave it permanently false.
+    isMountedRef.current = true
+
     // Register cleanup task with memory manager
     memoryManager.registerCleanupTask({
       priority: 'high',
