@@ -18,15 +18,83 @@ class MCPParameterCorrector:
     """
     
     def __init__(self):
+        # Explicit parameter mappings for known tool parameter differences
+        self.explicit_parameter_mappings = {
+            # Tool-specific mappings
+            "utilities_search_customer-lookup": {
+                "query": "search_term",
+                "name": "search_term",
+                "customer": "search_term",
+                "customer_name": "search_term"
+            },
+            "utilities_research_asset-news": {
+                "ticker": "symbol",
+                "stock": "symbol",
+                "asset": "symbol",
+                "period": "time_period",
+                "timeframe": "time_period"
+            },
+            "customer_success_lookup_trades_by_name": {
+                "customer_name": "account_name",
+                "name": "account_name",
+                "customer": "account_name"
+            }
+        }
+
+        # Default values for missing required parameters by tool
+        self.default_parameter_values = {
+            "utilities_research_asset-news": {
+                "time_period": "1w",
+                "symbol": "SPY",
+                "limit": 10
+            },
+            "utilities_search_customer-lookup": {
+                "limit": 20,
+                "offset": 0,
+                "search_term": "John Doe"  # fallback if no query provided
+            },
+            "customer_success_lookup_trades_by_name": {
+                "account_name": "John Doe",  # fallback
+                "limit": 10
+            }
+        }
+
+        # Universal parameter mappings (across all tools)
+        self.universal_parameter_mappings = {
+            "query": "search_term",
+            "search": "search_term",
+            "q": "search_term",
+            "ticker": "symbol",
+            "stock": "symbol",
+            "asset": "symbol",
+            "customer": "account_name",
+            "user": "account_name",
+            "period": "time_period",
+            "timeframe": "time_period",
+            "duration": "time_period"
+        }
+
         # Common parameter transformation patterns
         self.transformation_patterns = [
+            # Explicit mappings (highest priority)
+            {
+                "name": "explicit_mapping",
+                "pattern": r'.*',  # matches everything
+                "transform": self._explicit_mapping_transform
+            },
+            # Missing required parameter defaults
+            {
+                "name": "missing_parameter_defaults",
+                "pattern": r'Required.*undefined',
+                "transform": self._missing_parameter_defaults_transform
+            },
             # String to array transformations
             {
                 "name": "string_to_array",
                 "pattern": r'Expected.*array.*received.*string|Required.*\["([^"]+)"\].*array',
                 "transform": self._string_to_array_transform
             },
-            # Singular to plural transformations  
+            # Singular to plural transformations
             {
                 "name": "singular_to_plural",
                 "pattern": r'Expected.*"([^"]*s)".*received.*"([^"]*)"(?!s)',
@@ -40,7 +108,7 @@ class MCPParameterCorrector:
             }
         ]
     
-    def analyze_error_and_correct(self, error_message: str, original_params: Dict[str, Any]) -> Optional[ParameterCorrection]:
+    def analyze_error_and_correct(self, error_message: str, original_params: Dict[str, Any], tool_name: str = None, user_message: str = None) -> Optional[ParameterCorrection]:
         """
         Analyze an MCP validation error and attempt to correct the parameters.
         
@@ -57,7 +125,7 @@ class MCPParameterCorrector:
         # Try each transformation pattern
         for pattern_info in self.transformation_patterns:
             try:
-                correction = pattern_info["transform"](error_message, original_params)
+                correction = pattern_info["transform"](error_message, original_params, tool_name, user_message)
                 if correction:
                     print(f"[DEBUG] Applied transformation '{pattern_info['name']}': {correction.transformation_applied}")
                     return correction
@@ -72,8 +140,91 @@ class MCPParameterCorrector:
             
         print(f"[DEBUG] No parameter correction found for error: {error_message}")
         return None
-    
-    def _string_to_array_transform(self, error_message: str, params: Dict[str, Any]) -> Optional[ParameterCorrection]:
+
+    def _explicit_mapping_transform(self, error_message: str, params: Dict[str, Any], tool_name: str = None, user_message: str = None) -> Optional[ParameterCorrection]:
+        """Apply explicit parameter mappings for known tool parameter differences"""
+
+        # Extract the required parameter name from the error message
+        path_match = re.search(r'"path":\s*\[\s*"([^"]+)"\s*\]', error_message)
+        if not path_match:
+            return None
+
+        required_param = path_match.group(1)
+
+        # Check tool-specific mappings first
+        if tool_name and tool_name in self.explicit_parameter_mappings:
+            tool_mappings = self.explicit_parameter_mappings[tool_name]
+            for param_name, param_value in params.items():
+                if param_name in tool_mappings and tool_mappings[param_name] == required_param:
+                    corrected_params = params.copy()
+                    corrected_params[required_param] = param_value
+                    corrected_params.pop(param_name)
+
+                    return ParameterCorrection(
+                        original_params=params,
+                        corrected_params=corrected_params,
+                        transformation_applied=f"Tool-specific mapping: '{param_name}' → '{required_param}'",
+                        confidence=0.9
+                    )
+
+        # Check universal mappings
+        for param_name, param_value in params.items():
+            if param_name in self.universal_parameter_mappings and self.universal_parameter_mappings[param_name] == required_param:
+                corrected_params = params.copy()
+                corrected_params[required_param] = param_value
+                corrected_params.pop(param_name)
+
+                return ParameterCorrection(
+                    original_params=params,
+                    corrected_params=corrected_params,
+                    transformation_applied=f"Universal mapping: '{param_name}' → '{required_param}'",
+                    confidence=0.8
+                )
+
+        return None
+
+    def _missing_parameter_defaults_transform(self, error_message: str, params: Dict[str, Any], tool_name: str = None, user_message: str = None) -> Optional[ParameterCorrection]:
+        """Add default values for missing required parameters"""
+
+        # Extract the required parameter name from the error message
+        path_match = re.search(r'"path":\s*\[\s*"([^"]+)"\s*\]', error_message)
+        if not path_match:
+            return None
+
+        required_param = path_match.group(1)
+
+        # Check if parameter is already present
+        if required_param in params:
+            return None
+
+        # Check tool-specific defaults
+        if tool_name and tool_name in self.default_parameter_values:
+            tool_defaults = self.default_parameter_values[tool_name]
+            if required_param in tool_defaults:
+                corrected_params = params.copy()
+
+                # For missing parameters that need values from existing parameters
+                if required_param == "search_term" and "query" in params:
+                    corrected_params[required_param] = params["query"]
+                elif required_param == "symbol" and any(key in params for key in ["ticker", "stock", "asset"]):
+                    for key in ["ticker", "stock", "asset"]:
+                        if key in params:
+                            corrected_params[required_param] = params[key]
+                            break
+                else:
+                    # Use default value
+                    corrected_params[required_param] = tool_defaults[required_param]
+
+                return ParameterCorrection(
+                    original_params=params,
+                    corrected_params=corrected_params,
+                    transformation_applied=f"Added missing parameter '{required_param}' with default value",
+                    confidence=0.7
+                )
+
+        return None
+
+    def _string_to_array_transform(self, error_message: str, params: Dict[str, Any], tool_name: str = None) -> Optional[ParameterCorrection]:
         """Transform string parameters to arrays when MCP expects arrays"""
         
         # Look for "expected array, received string" or similar patterns
@@ -102,7 +253,7 @@ class MCPParameterCorrector:
         
         return None
     
-    def _singular_to_plural_transform(self, error_message: str, params: Dict[str, Any]) -> Optional[ParameterCorrection]:
+    def _singular_to_plural_transform(self, error_message: str, params: Dict[str, Any], tool_name: str = None) -> Optional[ParameterCorrection]:
         """Transform singular parameter names to plural when needed"""
         
         # Extract expected and received parameter names
@@ -125,7 +276,7 @@ class MCPParameterCorrector:
         
         return None
     
-    def _snake_to_camel_transform(self, error_message: str, params: Dict[str, Any]) -> Optional[ParameterCorrection]:
+    def _snake_to_camel_transform(self, error_message: str, params: Dict[str, Any], tool_name: str = None) -> Optional[ParameterCorrection]:
         """Transform snake_case to camelCase or vice versa"""
         
         # Look for parameter name mismatches involving underscores

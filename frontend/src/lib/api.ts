@@ -1,3 +1,5 @@
+import { devLog, DevLogCategory } from './developmentLogger'
+
 // Smart API URL detection for different environments
 function getAPIBaseURL(): string {
   // 1. Environment variable override (highest priority)
@@ -30,7 +32,8 @@ class APIClient {
 
   private async request<T = any>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    signal?: AbortSignal
   ): Promise<T> {
     const url = `${this.baseURL}${endpoint}`
     
@@ -39,6 +42,7 @@ class APIClient {
         'Content-Type': 'application/json',
         ...options.headers,
       },
+      signal: signal || options.signal,
       ...options,
     }
 
@@ -52,98 +56,102 @@ class APIClient {
 
       return await response.json()
     } catch (error) {
-      console.error('API request failed:', error)
+      // Don't log AbortError as it's expected during cancellation
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw error
+      }
+      devLog.error(DevLogCategory.API, 'API request failed', error)
       throw error
     }
   }
 
   // Health check
-  async healthCheck() {
-    return this.request('/health')
+  async healthCheck(signal?: AbortSignal) {
+    return this.request('/health', {}, signal)
   }
 
   // LLM Configuration endpoints
-  async createLLMConfig(config: any) {
+  async createLLMConfig(config: any, signal?: AbortSignal) {
     return this.request('/llm/config', {
       method: 'POST',
       body: JSON.stringify(config),
-    })
+    }, signal)
   }
 
-  async getLLMConfigs() {
-    return this.request('/llm/configs')
+  async getLLMConfigs(signal?: AbortSignal) {
+    return this.request('/llm/configs', {}, signal)
   }
 
-  async activateLLMConfig(configId: number) {
+  async activateLLMConfig(configId: number, signal?: AbortSignal) {
     return this.request(`/llm/config/${configId}/activate`, {
       method: 'POST',
-    })
+    }, signal)
   }
 
-  async deleteLLMConfig(configId: number) {
+  async deleteLLMConfig(configId: number, signal?: AbortSignal) {
     return this.request(`/llm/config/${configId}`, {
       method: 'DELETE',
-    })
+    }, signal)
   }
 
-  async updateLLMConfig(configId: number, updates: any) {
+  async updateLLMConfig(configId: number, updates: any, signal?: AbortSignal) {
     return this.request(`/llm/config/${configId}`, {
       method: 'PUT',
       body: JSON.stringify(updates),
-    })
+    }, signal)
   }
 
   // MCP Server endpoints
-  async createMCPServer(server: any) {
+  async createMCPServer(server: any, signal?: AbortSignal) {
     return this.request('/mcp/servers', {
       method: 'POST',
       body: JSON.stringify(server),
-    })
+    }, signal)
   }
 
-  async getMCPServers() {
-    return this.request('/mcp/servers')
+  async getMCPServers(signal?: AbortSignal) {
+    return this.request('/mcp/servers', {}, signal)
   }
 
-  async getMCPServerWithTools(serverId: number) {
-    return this.request(`/mcp/servers/${serverId}`)
+  async getMCPServerWithTools(serverId: number, signal?: AbortSignal) {
+    return this.request(`/mcp/servers/${serverId}`, {}, signal)
   }
 
-  async toggleMCPServer(serverId: number, enabled: boolean) {
+  async toggleMCPServer(serverId: number, enabled: boolean, signal?: AbortSignal) {
     return this.request(`/mcp/servers/${serverId}/toggle`, {
       method: 'POST',
       body: JSON.stringify({ enabled }),
-    })
+    }, signal)
   }
 
-  async deleteMCPServer(serverId: number) {
+  async deleteMCPServer(serverId: number, signal?: AbortSignal) {
     return this.request(`/mcp/servers/${serverId}`, {
       method: 'DELETE',
-    })
+    }, signal)
   }
 
-  async startLocalServer(serverId: number) {
+  async startLocalServer(serverId: number, signal?: AbortSignal) {
     return this.request(`/mcp/servers/${serverId}/start`, {
       method: 'POST',
-    })
+    }, signal)
   }
 
-  async stopLocalServer(serverId: number) {
+  async stopLocalServer(serverId: number, signal?: AbortSignal) {
     return this.request(`/mcp/servers/${serverId}/stop`, {
       method: 'POST',
-    })
+    }, signal)
   }
 
-  async toggleMCPTool(toolId: number, enabled: boolean) {
+  async toggleMCPTool(toolId: number, enabled: boolean, signal?: AbortSignal) {
     return this.request(`/mcp/tools/${toolId}/toggle?enabled=${enabled}`, {
       method: 'POST',
-    })
+    }, signal)
   }
 
   // Chat endpoints
-  async chat(request: any) {
+  async chat(request: any, signal?: AbortSignal) {
     try {
-      console.log('🌐 API.chat() called with request:', {
+      devLog.api('API.chat() called', {
         message: request.message,
         historyLength: request.conversation_history?.length || 0,
         llmConfigId: request.llm_config_id
@@ -152,27 +160,26 @@ class APIClient {
       const result = await this.request('/chat', {
         method: 'POST',
         body: JSON.stringify(request),
-      })
+      }, signal)
       
-      console.log('🌐 API.chat() response:', {
+      devLog.api('API.chat() response', {
         hasResponse: !!result.response,
         responseLength: result.response?.length || 0,
-        hasToolCalls: !!result.tool_calls?.length,
-        fullResult: result
+        hasToolCalls: !!result.tool_calls?.length
       })
       
       return result
     } catch (error) {
-      console.error('🌐 API.chat() failed:', error)
+      devLog.error(DevLogCategory.API, 'API.chat() failed', error)
       throw error
     }
   }
 
-  async callTool(request: any) {
+  async callTool(request: any, signal?: AbortSignal) {
     return this.request('/mcp/call-tool', {
       method: 'POST',
       body: JSON.stringify(request),
-    })
+    }, signal)
   }
 }
 

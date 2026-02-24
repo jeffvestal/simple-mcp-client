@@ -7,202 +7,25 @@ import { Send, Loader2, ChevronDown, ChevronRight, Wrench, Trash2 } from 'lucide
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
 import { useToast } from './ui/use-toast'
 import ReactMarkdown from 'react-markdown'
+import { safeJsonParseWithDefault } from '../lib/safeJson'
+import { logError } from '../lib/errorLogger'
+import { 
+  getMemoryManager, 
+  createManagedAbortController, 
+  trackAsyncOperation 
+} from '../lib/MemoryManager'
+import { devLog, DevLogCategory } from '../lib/developmentLogger'
+import { 
+  createDefaultServiceContainer
+} from '../services/tool-execution/factories/ToolExecutionServiceFactory'
+import type { ServiceContainer, ExternalDependencies } from '../services/tool-execution/types/ServiceDependencies'
 
-// Helper function to detect if an error is a validation failure that can be retried
-function isValidationError(error: string): boolean {
-  if (!error) return false
-  const errorLower = error.toLowerCase()
-  return (
-    errorLower.includes('invalid arguments') ||
-    errorLower.includes('required') ||
-    errorLower.includes('expected') ||
-    errorLower.includes('validation') ||
-    errorLower.includes('missing parameter') ||
-    (errorLower.includes('mcp error') && errorLower.includes('-32602'))
-  )
-}
+// Legacy helper functions removed - now handled by services:
+// - isValidationError -> ToolRetryService 
+// - extractAndCleanToolContent -> ToolResultProcessor
+// - validateAndCleanConversationHistory -> ConversationHistoryService
 
-// Helper function to extract and clean content from MCP tool responses
-function extractAndCleanToolContent(toolResult: any, toolName: string): string {
-  let mcpResult = null
-  
-  // Determine the correct structure to extract from
-  if (toolResult.result && toolResult.result.result) {
-    // Nested structure: API response -> MCP response -> MCP result
-    mcpResult = toolResult.result.result
-  } else if (toolResult.result) {
-    // Direct MCP response format
-    mcpResult = toolResult.result
-  } else {
-    // Alternative format
-    mcpResult = toolResult
-  }
-  
-  // Check if this is an error response - MCP errors are at the result level
-  if (toolResult.result && toolResult.result.error && toolResult.result.jsonrpc) {
-    // Direct MCP error response
-    const error = toolResult.result.error
-    return `Tool ${toolName} encountered an error: ${error.message || JSON.stringify(error)}`
-  } else if (mcpResult.error || (mcpResult.jsonrpc && mcpResult.error)) {
-    // Fallback for other error structures
-    const error = mcpResult.error || mcpResult
-    return `Tool ${toolName} encountered an error: ${error.message || JSON.stringify(error)}`
-  }
-  
-  // Extract raw text from MCP content if it exists
-  let rawTextContent = null
-  if (mcpResult.content && Array.isArray(mcpResult.content)) {
-    // Extract text from content array and try to parse as JSON
-    const textContent = mcpResult.content
-      .filter((item: any) => item.type === 'text')
-      .map((item: any) => item.text)
-      .join('\n')
-    
-    // Try to parse the text content as JSON (common with Elasticsearch MCP responses)
-    try {
-      const parsedContent = JSON.parse(textContent)
-      if (parsedContent.results && Array.isArray(parsedContent.results) && parsedContent.results[0]?.data) {
-        rawTextContent = parsedContent.results[0].data
-      } else {
-        rawTextContent = parsedContent
-      }
-    } catch {
-      rawTextContent = textContent
-    }
-  }
-  
-  // Use rawTextContent if available, otherwise use mcpResult for tool-specific formatting
-  const dataToProcess = rawTextContent || mcpResult
-  
-  // Tool-specific content extraction and formatting
-  if (toolName === 'list_indices' && dataToProcess.indices && Array.isArray(dataToProcess.indices)) {
-    // Clean up list_indices response
-    const indices = dataToProcess.indices
-    return `Found ${indices.length} Elasticsearch indices:\n\n${indices.map((index: any) => 
-      `• **${index.index}** (${index.status})\n  - Documents: ${index.docsCount || index['docs.count'] || 'N/A'}\n  - Size: ${index['store.size'] || 'N/A'}\n  - Health: ${index.health || 'N/A'}`
-    ).join('\n\n')}`
-  } else if (toolName.includes('search') && dataToProcess.hits) {
-    // Clean up search responses
-    const hits = dataToProcess.hits
-    if (hits.total && hits.total.value > 0) {
-      return `Found ${hits.total.value} results:\n\n${hits.hits.slice(0, 5).map((hit: any, idx: number) => 
-        `${idx + 1}. ${JSON.stringify(hit._source, null, 2)}`
-      ).join('\n\n')}${hits.hits.length > 5 ? '\n\n...(showing first 5 results)' : ''}`
-    } else {
-      return 'No results found for the search query.'
-    }
-  } else if (toolName.includes('mapping') && typeof dataToProcess === 'object' && !Array.isArray(dataToProcess)) {
-    // Clean up mapping responses
-    const mappings = dataToProcess
-    const indexNames = Object.keys(mappings)
-    if (indexNames.length > 0) {
-      return `Index mappings:\n\n${indexNames.map(indexName => {
-        const mapping = mappings[indexName]
-        if (mapping.mappings && mapping.mappings.properties) {
-          const fields = Object.keys(mapping.mappings.properties)
-          return `**${indexName}**:\n  Fields: ${fields.slice(0, 10).join(', ')}${fields.length > 10 ? '...' : ''}`
-        }
-        return `**${indexName}**: ${JSON.stringify(mapping).substring(0, 100)}...`
-      }).join('\n\n')}`
-    }
-  }
-  
-  // Generic content extraction for other tools
-  if (mcpResult.structuredContent && mcpResult.structuredContent.result) {
-    return mcpResult.structuredContent.result
-  } else if (rawTextContent && typeof rawTextContent === 'string') {
-    return rawTextContent
-  } else if (mcpResult.content && Array.isArray(mcpResult.content)) {
-    // Extract text from content array
-    return mcpResult.content
-      .filter((item: any) => item.type === 'text')
-      .map((item: any) => item.text)
-      .join('\n')
-  } else if (mcpResult.content && typeof mcpResult.content === 'string') {
-    return mcpResult.content
-  } else if (dataToProcess && typeof dataToProcess === 'object') {
-    // Handle data objects - try to format nicely
-    if (typeof dataToProcess === 'string') {
-      return dataToProcess
-    } else if (Array.isArray(dataToProcess)) {
-      return `Found ${dataToProcess.length} items:\n${dataToProcess.slice(0, 3).map((item: any, idx: number) => 
-        `${idx + 1}. ${typeof item === 'string' ? item : JSON.stringify(item, null, 2)}`
-      ).join('\n')}${dataToProcess.length > 3 ? '\n...(showing first 3 items)' : ''}`
-    } else {
-      // Object data - format key fields nicely
-      const obj = dataToProcess
-      const keys = Object.keys(obj)
-      if (keys.length <= 5) {
-        return Object.entries(obj).map(([key, value]) => 
-          `**${key}**: ${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}`
-        ).join('\n')
-      } else {
-        return `Data object with ${keys.length} properties:\n${keys.slice(0, 5).map(key => 
-          `• ${key}: ${typeof obj[key]}`
-        ).join('\n')}${keys.length > 5 ? '\n• ...(and more)' : ''}`
-      }
-    }
-  } else {
-    // Fallback to JSON string but try to make it more readable
-    const jsonStr = JSON.stringify(mcpResult, null, 2)
-    if (jsonStr.length > 500) {
-      return `${jsonStr.substring(0, 500)}...\n\n(Response truncated for readability)`
-    }
-    return jsonStr
-  }
-}
 
-// Helper function to validate and clean conversation history for OpenAI API compliance
-function validateAndCleanConversationHistory(messages: any[]): any[] {
-  console.log('🔍 VALIDATION: Starting validation of', messages.length, 'messages')
-  const cleanedHistory: any[] = []
-  let lastAssistantToolCalls: any[] | null = null
-  
-  for (const msg of messages) {
-    if (msg.role === 'user') {
-      // User messages are always valid
-      console.log('🔍 VALIDATION: Keeping user message')
-      cleanedHistory.push(msg)
-      lastAssistantToolCalls = null // Reset tool call tracking
-    } else if (msg.role === 'assistant') {
-      // Assistant messages are always valid
-      console.log('🔍 VALIDATION: Keeping assistant message, tool_calls:', msg.tool_calls?.length || 0)
-      cleanedHistory.push(msg)
-      // Track if this assistant message has tool calls
-      lastAssistantToolCalls = msg.tool_calls && msg.tool_calls.length > 0 ? msg.tool_calls : null
-      if (lastAssistantToolCalls) {
-        console.log('🔍 VALIDATION: Tracking tool_call_ids:', lastAssistantToolCalls.map(tc => tc.id).join(', '))
-      }
-    } else if (msg.role === 'tool') {
-      // Tool messages are only valid if they follow an assistant message with matching tool_calls
-      console.log(`🔍 VALIDATION: Processing tool message with tool_call_id: ${msg.tool_call_id}`)
-      if (lastAssistantToolCalls && msg.tool_call_id) {
-        // Check if this tool message matches one of the expected tool_call_ids
-        const matchingToolCall = lastAssistantToolCalls.find((tc: any) => tc.id === msg.tool_call_id)
-        if (matchingToolCall) {
-          // Valid tool message - include it
-          console.log(`🔍 VALIDATION: ✅ Keeping tool message, matches tool_call_id: ${msg.tool_call_id}`)
-          cleanedHistory.push(msg)
-          // Remove this tool call from tracking to prevent duplicates
-          lastAssistantToolCalls = lastAssistantToolCalls.filter((tc: any) => tc.id !== msg.tool_call_id)
-        } else {
-          // Invalid tool message - skip it
-          console.log(`🔍 VALIDATION: ❌ Skipping orphaned tool message with tool_call_id: ${msg.tool_call_id}`)
-        }
-      } else {
-        // No preceding assistant message with tool calls - skip this tool message
-        console.log(`🔍 VALIDATION: ❌ Skipping tool message without preceding assistant tool calls: ${msg.tool_call_id}`)
-      }
-    } else {
-      // Other message types (if any) - include them
-      cleanedHistory.push(msg)
-      lastAssistantToolCalls = null // Reset tool call tracking
-    }
-  }
-  
-  console.log('🔍 VALIDATION: Finished validation, returning', cleanedHistory.length, 'messages')
-  return cleanedHistory
-}
 
 interface ToolCallDisplayProps {
   toolCall: any
@@ -246,554 +69,345 @@ function ToolCallDisplay({ toolCall }: ToolCallDisplayProps) {
   )
 }
 
+// Configuration constants (some moved to services)
+const MAX_CONVERSATION_HISTORY = 50 // Maximum number of messages to keep in history
+const TOOL_CACHE_EXPIRY_MS = 5 * 60 * 1000 // Cache tool server mappings for 5 minutes
+
 export function ChatInterfaceSimple() {
   const [input, setInput] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const currentAbortController = useRef<AbortController | null>(null)
+  const isMountedRef = useRef(true)
+  const toolServerCache = useRef<{ [toolName: string]: number }>({})
+  const cacheTimestamp = useRef<number>(0)
+  const memoryManager = getMemoryManager()
   const { messages, isLoading, addMessage, updateMessage, setLoading, activeLLMConfig, clearMessages } = useStore()
   const { toast } = useToast()
 
+  // Service container for tool execution - replaces monolithic executeToolCalls function
+  const serviceContainerRef = useRef<ServiceContainer | null>(null)
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  // Safe state update helpers that check if component is still mounted
+  const safeAddMessage = (message: Parameters<typeof addMessage>[0]) => {
+    if (isMountedRef.current) {
+      const messageId = addMessage(message)
+
+      // DEBUG: Log when tool messages are added
+      if (message.role === 'tool') {
+        console.log('DEBUG: safeAddMessage added tool message', {
+          messageId,
+          role: message.role,
+          toolCallId: message.tool_call_id,
+          contentLength: message.content?.length,
+          currentMessagesCount: messages.length
+        })
+      }
+
+      return messageId
+    }
+    return ''
+  }
+
+  const safeUpdateMessage = (messageId: string, updates: Parameters<typeof updateMessage>[1]) => {
+    if (isMountedRef.current) {
+      updateMessage(messageId, updates)
+    }
+  }
+
+  const safeSetLoading = (loading: boolean) => {
+    if (isMountedRef.current) {
+      setLoading(loading)
+    }
+  }
+
+  // Initialize service container with external dependencies
+  const initializeServiceContainer = (): ServiceContainer => {
+    if (!serviceContainerRef.current) {
+      // Temporary inline safe JSON parser to avoid import issues
+      const inlineSafeJsonParseWithDefault = (text: string, defaultValue: any) => {
+        try {
+          return text ? JSON.parse(text) : defaultValue
+        } catch {
+          return defaultValue
+        }
+      }
+      
+      const externalDependencies: ExternalDependencies = {
+        api,
+        store: {
+          messages,
+          addMessage,
+          updateMessage
+        },
+        toast: { toast },
+        memoryManager: {
+          registerCleanupTask: memoryManager.registerCleanupTask.bind(memoryManager),
+          addMemoryPressureListener: memoryManager.addMemoryPressureListener.bind(memoryManager),
+          getMemoryStats: memoryManager.getMemoryStats.bind(memoryManager)
+        },
+        performanceMonitor: {
+          startToolExecution: () => ({}),  // Simplified for now
+          recordMetric: () => {}
+        },
+        errorLogger: {
+          logError,
+          logWarning: (message: string) => {
+            // Map to logError since logWarning doesn't exist
+            logError(message, undefined, 'UNKNOWN' as any)  // Need to fix category
+          }
+        },
+        safeJson: {
+          safeJsonParseWithDefault: inlineSafeJsonParseWithDefault
+        },
+        messageManager: {
+          safeAddMessage,
+          safeUpdateMessage,
+          getMessages: () => {
+            // Get fresh messages from store to avoid React state lag
+            const currentMessages = useStore.getState().messages
+            devLog.conversation('Getting messages from store', {
+              messageCount: currentMessages.length,
+              reactStateCount: messages.length
+            })
+            return currentMessages
+          }
+        },
+        llmConfigManager: {
+          getActiveLLMConfig: () => activeLLMConfig ? { id: String(activeLLMConfig.id) } : null
+        }
+      }
+
+      serviceContainerRef.current = createDefaultServiceContainer(externalDependencies)
+      devLog.memory('Service container initialized')
+    }
+    return serviceContainerRef.current
+  }
+
+  // Get service container (initialize if needed)
+  const getServiceContainer = (): ServiceContainer => {
+    return initializeServiceContainer()
+  }
+
+  // Helper function to limit conversation history to prevent memory growth
+  const limitConversationHistory = (messages: any[]) => {
+    if (messages.length <= MAX_CONVERSATION_HISTORY) {
+      return messages
+    }
+    
+    // Keep the most recent messages, but ensure we maintain conversation context
+    // Always keep user-assistant pairs together
+    const limitedMessages = messages.slice(-MAX_CONVERSATION_HISTORY)
+    
+    // If we cut off in the middle of a conversation, try to start from a user message
+    const firstUserIndex = limitedMessages.findIndex(msg => msg.role === 'user')
+    if (firstUserIndex > 0) {
+      return limitedMessages.slice(firstUserIndex)
+    }
+    
+    return limitedMessages
+  }
+
+  // Tool server mapping cache helpers
+  const isCacheValid = () => {
+    const now = Date.now()
+    return (now - cacheTimestamp.current) < TOOL_CACHE_EXPIRY_MS
+  }
+
+  const buildToolServerCache = async (abortSignal?: AbortSignal) => {
+    try {
+      devLog.cache('Building tool server mapping cache...')
+      const servers = await trackAsyncOperation(
+        () => api.getMCPServers(abortSignal),
+        'Fetch MCP servers',
+        abortSignal
+      ).catch(error => {
+        if (!abortSignal?.aborted) {
+          devLog.error(DevLogCategory.API, 'Failed to fetch MCP servers', error)
+        }
+        throw error
+      })
+      
+      const toolMapping: { [toolName: string]: number } = {}
+      
+      for (const server of servers) {
+        if (abortSignal?.aborted) throw new Error('Operation cancelled')
+        
+        const serverDetails = await trackAsyncOperation(
+          () => api.getMCPServerWithTools(server.id, abortSignal),
+          `Fetch tools for server ${server.id}`,
+          abortSignal
+        ).catch(error => {
+          if (!abortSignal?.aborted) {
+            devLog.error(DevLogCategory.API, 'Failed to fetch tools for server', { serverId: server.id, error })
+          }
+          // Continue with other servers even if one fails
+          return { tools: [] }
+        })
+        
+        for (const tool of serverDetails.tools || []) {
+          if (tool.is_enabled) {
+            toolMapping[tool.name] = server.id
+          }
+        }
+      }
+      
+      toolServerCache.current = toolMapping
+      cacheTimestamp.current = Date.now()
+      devLog.cache('Cached tools from servers', { 
+        toolCount: Object.keys(toolMapping).length, 
+        serverCount: servers.length 
+      })
+      
+    } catch (error) {
+      if (!abortSignal?.aborted) {
+        devLog.error(DevLogCategory.CACHE, 'Failed to build tool server cache', error)
+        logError('Failed to build tool server cache', error)
+      }
+      // Don't throw - return empty cache and let individual tool calls handle missing tools
+      toolServerCache.current = {}
+      cacheTimestamp.current = Date.now()
+    }
+  }
+
+  const findServerForTool = async (toolName: string, abortSignal?: AbortSignal): Promise<number | null> => {
+    // Check cache first
+    if (isCacheValid() && toolServerCache.current[toolName]) {
+      devLog.cache('Found tool in cache', { toolName, serverId: toolServerCache.current[toolName] })
+      return toolServerCache.current[toolName]
+    }
+    
+    // Cache is stale or doesn't have this tool, rebuild it
+    if (!isCacheValid()) {
+      devLog.cache('Tool cache expired, rebuilding...')
+      await buildToolServerCache(abortSignal)
+    }
+    
+    // Check cache again after rebuild
+    if (toolServerCache.current[toolName]) {
+      devLog.cache('Found tool after cache rebuild', { toolName, serverId: toolServerCache.current[toolName] })
+      return toolServerCache.current[toolName]
+    }
+    
+    devLog.cache('Tool not found in any server', { toolName })
+    return null
   }
 
   useEffect(() => {
     scrollToBottom()
   }, [messages])
 
-  // Helper function to execute tool calls (can be called recursively for retries)
-  const executeToolCalls = async (toolCalls: any[], assistantMessageId: string, currentUserMessage?: string) => {
-    if (!toolCalls || toolCalls.length === 0) return
-    
-    let allToolsCompleted = true
-    let currentToolCalls = toolCalls.map((call: any) => ({
-      id: call.id,
-      name: call.name,
-      parameters: call.arguments || call.parameters,
-      status: 'pending' as const
-    }))
-    
-    try {
-      // Process tool calls sequentially
-      for (const toolCall of currentToolCalls) {
-        try {
-          // Find the server that has this tool
-          const servers = await api.getMCPServers()
-          let targetServerId = null
-          for (const server of servers) {
-            const serverDetails = await api.getMCPServerWithTools(server.id)
-            if (serverDetails.tools.some((tool: any) => tool.name === toolCall.name && tool.is_enabled)) {
-              targetServerId = server.id
-              break
-            }
-          }
-
-          if (targetServerId) {
-            const toolResult = await api.callTool({
-              tool_name: toolCall.name,
-              parameters: toolCall.parameters,
-              server_id: targetServerId
-            })
-
-            // Update tool call status
-            const updatedToolCalls = currentToolCalls.map(tc => 
-              tc.id === toolCall.id 
-                ? { 
-                    ...tc, 
-                    status: toolResult.success ? 'completed' as const : 'error' as const,
-                    result: toolResult.success ? toolResult.result : toolResult.error
-                  }
-                : tc
-            )
-            
-            // Log tool execution result
-            if (toolResult.success) {
-              console.log(`✅ Tool ${toolCall.name} completed successfully`)
-            } else {
-              console.log(`❌ Tool ${toolCall.name} failed: ${toolResult.error}`)
-            }
-            
-            currentToolCalls = updatedToolCalls
-            updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
-            allToolsCompleted = allToolsCompleted && toolResult.success
-          } else {
-            // Tool not found
-            const updatedToolCalls = currentToolCalls.map(tc => 
-              tc.id === toolCall.id 
-                ? { 
-                    ...tc, 
-                    status: 'error' as const,
-                    result: 'Tool not found or disabled'
-                  }
-                : tc
-            )
-            
-            currentToolCalls = updatedToolCalls
-            updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
-            allToolsCompleted = false
-          }
-        } catch (error) {
-          console.error('ERROR: Individual tool execution failed:', error)
-          
-          // Update tool call with error status
-          const updatedToolCalls = currentToolCalls.map(tc => 
-            tc.id === toolCall.id 
-              ? { 
-                  ...tc, 
-                  status: 'error' as const,
-                  result: error instanceof Error ? error.message : 'Unknown error'
-                }
-              : tc
-          )
-          
-          currentToolCalls = updatedToolCalls
-          updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
-          allToolsCompleted = false
-          
-          toast({
-            title: "Tool Error",
-            description: `${toolCall.name} failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            variant: "destructive",
-          })
+  // Cleanup function to cancel ongoing operations
+  useEffect(() => {
+    // Register cleanup task with memory manager
+    memoryManager.registerCleanupTask({
+      priority: 'high',
+      description: 'ChatInterfaceSimple component cleanup',
+      execute: () => {
+        // Clear tool server cache
+        toolServerCache.current = {}
+        cacheTimestamp.current = 0
+        
+        // Clear any large data structures
+        if (messages.length > 100) {
+          devLog.memory('Clearing large message history from memory', { messageCount: messages.length })
         }
       }
-    } catch (error) {
-      console.error('ERROR: Critical failure in tool execution loop:', error)
+    })
+    
+    // Add memory pressure listener
+    memoryManager.addMemoryPressureListener(0.7, (usage) => {
+      devLog.memory('Memory pressure in ChatInterface', { usagePercent: (usage * 100).toFixed(1) })
+      // Clear tool cache if memory pressure
+      if (usage > 0.8) {
+        toolServerCache.current = {}
+        cacheTimestamp.current = 0
+      }
+    })
+    
+    return () => {
+      // Mark component as unmounted
+      isMountedRef.current = false
       
-      // Mark all remaining tools as failed
-      currentToolCalls = currentToolCalls.map(tc => 
-        tc.status === 'pending' ? { ...tc, status: 'error' as const, result: 'Tool execution interrupted' } : tc
+      // Cancel any ongoing operations when component unmounts
+      if (currentAbortController.current) {
+        currentAbortController.current.abort()
+        memoryManager.unregisterResource(currentAbortController.current)
+        currentAbortController.current = null
+      }
+      
+      // Clear tool server cache
+      toolServerCache.current = {}
+      cacheTimestamp.current = 0
+      
+      // Dispose service container
+      if (serviceContainerRef.current) {
+        serviceContainerRef.current.dispose()
+        serviceContainerRef.current = null
+        devLog.memory('Service container disposed')
+      }
+      
+      // Trigger cleanup of component resources
+      memoryManager.cleanupResourcesByType('abort-controller')
+    }
+  }, [])
+
+  // Helper function to execute tool calls (can be called recursively for retries)
+  // Tool execution function - now uses service architecture instead of monolithic implementation
+  const executeToolCalls = async (
+    toolCalls: any[], 
+    assistantMessageId: string, 
+    currentUserMessage?: string, 
+    abortSignal?: AbortSignal, 
+    retryCount: number = 0
+  ) => {
+    try {
+      devLog.toolExecution('Delegating to ToolExecutionService', { 
+        toolCallCount: toolCalls?.length || 0, 
+        retryCount,
+        assistantMessageId 
+      })
+
+      // Get the service container and delegate to the ToolExecutionService
+      const serviceContainer = getServiceContainer()
+      
+      // Convert tool calls to the format expected by the service
+      const formattedToolCalls = toolCalls.map((call: any) => ({
+        id: call.id,
+        name: call.name,
+        parameters: call.arguments || call.parameters,
+        status: 'pending' as const
+      }))
+
+      // Call the service - it handles all the complexity that was in the old monolithic function
+      await serviceContainer.toolExecutionService.executeToolCalls(
+        formattedToolCalls,
+        assistantMessageId,
+        currentUserMessage,
+        abortSignal,
+        retryCount
       )
-      updateMessage(assistantMessageId, { tool_calls: currentToolCalls })
-      allToolsCompleted = false
+
+      devLog.toolExecution('ToolExecutionService completed successfully')
+    } catch (error) {
+      devLog.error('TOOL_EXECUTION', 'Service-based tool execution failed', error)
       
+      // Fallback error handling
       toast({
         title: "Tool Execution Error",
-        description: "Critical failure during tool processing",
+        description: "Failed to execute tools. Please try again.",
         variant: "destructive",
       })
-    }
-    
-    // After all tools are executed, process results and continue conversation
-    if (currentToolCalls.length > 0) {
-      try {
-        // Filter tool calls that have actual successful results (exclude errors)
-        const successfulToolCalls = currentToolCalls.filter(tc => {
-          // Must be completed successfully
-          if (tc.status !== 'completed') {
-            console.log(`Tool ${tc.name} excluded: status is ${tc.status}`)
-            return false
-          }
-          
-          // Must have usable result content
-          if (!tc.result) {
-            console.log(`Tool ${tc.name} excluded: no result`)
-            return false
-          }
-          
-          // Check if we have any usable content in the successful result
-          let hasContent = false
-          if (tc.result.result) {
-            const mcpResponseResult = tc.result.result
-            hasContent = !!(mcpResponseResult.content || mcpResponseResult.structuredContent || mcpResponseResult.result)
-          } else if (tc.result.content || tc.result.structuredContent) {
-            hasContent = true
-          } else {
-            hasContent = typeof tc.result === 'object' && Object.keys(tc.result).length > 0
-          }
-          
-          return hasContent
-        })
-        
-        // Process based on success/failure outcomes
-        if (successfulToolCalls.length === 0) {
-          // All tools failed - check if any are validation errors that can be retried
-          const validationFailures = currentToolCalls.filter(tc => 
-            tc.status === 'error' && isValidationError(String(tc.result))
-          )
-          
-          console.log('ERROR: All tools failed. Tool errors:', currentToolCalls.map(tc => ({
-            name: tc.name, 
-            status: tc.status, 
-            error: tc.result
-          })))
-          
-          // CRITICAL: Add tool response messages for ALL failed tools BEFORE retry
-          // This ensures the conversation history is valid for the retry attempt
-          for (const tc of currentToolCalls) {
-            const errorContent = `Error executing ${tc.name}: ${tc.result || 'Tool execution failed'}`
-            
-            // Add error response to message store
-            addMessage({
-              role: 'tool',
-              content: errorContent,
-              tool_call_id: tc.id
-            })
-            
-            console.log(`📝 Added error response for failed tool ${tc.name} (${tc.id}) before retry`)
-          }
-          
-          if (validationFailures.length > 0) {
-            // We have validation failures - ask LLM to retry with error context
-            console.log('INFO: Detected validation failures, asking LLM to retry:', validationFailures.map(tc => tc.name))
-            
-            const errorDescriptions = validationFailures.map(tc => 
-              `Tool "${tc.name}" failed with validation error: ${tc.result}. Please retry this tool call with the correct parameters.`
-            ).join('\n\n')
-            
-            try {
-              // Create conversation history for LLM retry with validation and cleaning
-              // Use the current messages which now include the error responses
-              const cleanedMessages = messages.map(msg => {
-                // Clean tool calls to remove internal execution data
-                let cleanedToolCalls = undefined
-                if (msg.tool_calls && msg.tool_calls.length > 0) {
-                  cleanedToolCalls = msg.tool_calls.map((tc: any) => ({
-                    id: tc.id,
-                    name: tc.name,
-                    arguments: tc.parameters || tc.arguments
-                    // Remove: status, result, and other internal fields
-                  }))
-                }
-                
-                return {
-                  role: msg.role,
-                  content: msg.content,
-                  tool_calls: cleanedToolCalls,
-                  tool_call_id: msg.tool_call_id // Preserve tool_call_id for tool messages
-                }
-              })
-              
-              // Validate and clean conversation history to prevent orphaned tool messages
-              const validatedMessages = validateAndCleanConversationHistory(cleanedMessages)
-              
-              const retryHistory = [
-                ...validatedMessages,
-                // Add a message describing the validation failures
-                {
-                  id: `retry-context-${Date.now()}`,
-                  role: 'user' as const,
-                  content: `The previous tool calls failed with validation errors:\n\n${errorDescriptions}\n\nPlease retry the failed tool calls with the correct parameters based on the error messages.`,
-                  timestamp: new Date()
-                }
-              ]
-              
-              console.log('INFO: Sending retry request to LLM...')
-              
-              // Ask LLM to retry with tool calling enabled
-              const retryResponse = await api.chat({
-                message: '',
-                conversation_history: retryHistory,
-                llm_config_id: activeLLMConfig?.id
-              })
-              
-              if (retryResponse.tool_calls && retryResponse.tool_calls.length > 0) {
-                console.log('INFO: LLM provided retry tool calls, continuing execution...')
-                
-                // Start the tool execution process again with the retry tool calls
-                const retryAssistantMessageId = addMessage({
-                  role: 'assistant',
-                  content: retryResponse.response || 'Retrying with corrected parameters...',
-                  tool_calls: retryResponse.tool_calls.map((call: any) => ({
-                    id: call.id,
-                    name: call.name,
-                    parameters: call.arguments,
-                    status: 'pending' as const
-                  }))
-                })
-                
-                // Execute the retry tool calls (recursively call the same logic)
-                await executeToolCalls(retryResponse.tool_calls, retryAssistantMessageId, currentUserMessage)
-                return
-              } else {
-                // LLM didn't provide tool calls, treat as final response
-                addMessage({
-                  role: 'assistant',
-                  content: retryResponse.response || "I apologize, but I'm having trouble with the tool parameters. Could you please rephrase your request?",
-                  tool_calls: []
-                })
-              }
-            } catch (error) {
-              console.error('ERROR: Failed to retry with LLM:', error)
-              // Fall back to generic error message
-              addMessage({
-                role: 'assistant',
-                content: "I encountered some technical difficulties while trying to access the tools to help with your request. Please try asking your question again, or let me know if you'd like me to help in a different way.",
-                tool_calls: []
-              })
-            }
-          } else {
-            // No validation failures, just regular errors - provide user-friendly error message
-            try {
-              addMessage({
-                role: 'assistant',
-                content: "I encountered some technical difficulties while trying to access the tools to help with your request. Please try asking your question again, or let me know if you'd like me to help in a different way.",
-                tool_calls: []
-              })
-            } catch (error) {
-              console.error('ERROR: Failed to add error message:', error)
-              toast({
-                title: "Critical Error",
-                description: "Unable to process your request. Please refresh the page and try again.",
-                variant: "destructive",
-              })
-            }
-          }
-          
-          return
-          
-        } else {
-          // Some or all tools succeeded - proceed with normal flow
-          // Build conversation history with validation and cleaning
-          console.log('🔍 DEBUG: Building conversation for final LLM call')
-          console.log('🔍 DEBUG: Messages in store:', messages.length)
-          messages.forEach((msg, idx) => {
-            console.log(`🔍 MSG[${idx}]: ${msg.role} - "${msg.content?.substring(0, 50)}..." - tool_calls: ${msg.tool_calls?.length || 0} - tool_call_id: ${msg.tool_call_id || 'none'}`)
-            if (msg.tool_calls && msg.tool_calls.length > 0) {
-              msg.tool_calls.forEach((tc, tcIdx) => {
-                console.log(`🔍   TOOL_CALL[${tcIdx}]: id=${tc.id}, name=${tc.name}`)
-              })
-            }
-          })
-          
-          const cleanedMessages = []
-          
-          // Clean all messages from store, including current conversation context
-          for (const msg of messages) {
-            // Clean tool calls to remove internal execution data
-            let cleanedToolCalls = undefined
-            if (msg.tool_calls && msg.tool_calls.length > 0) {
-              cleanedToolCalls = msg.tool_calls.map((tc: any) => ({
-                id: tc.id,
-                name: tc.name,
-                arguments: tc.parameters || tc.arguments
-                // Remove: status, result, and other internal fields
-              }))
-            }
-            
-            cleanedMessages.push({
-              role: msg.role,
-              content: msg.content,
-              tool_calls: cleanedToolCalls,
-              tool_call_id: msg.tool_call_id // Preserve tool_call_id for tool messages
-            })
-          }
-          
-          console.log('🔍 DEBUG: Messages before validation:', cleanedMessages.length)
-          cleanedMessages.forEach((msg, idx) => {
-            console.log(`🔍 BEFORE[${idx}]: ${msg.role} - tool_calls: ${msg.tool_calls?.length || 0} - tool_call_id: ${msg.tool_call_id || 'none'}`)
-          })
-          
-          // Validate and clean conversation history to prevent orphaned tool messages
-          const validatedMessages = validateAndCleanConversationHistory(cleanedMessages)
-          
-          // CRITICAL FIX: Add the current assistant message with tool_calls
-          // The message store might not have the current assistant message yet
-          const currentAssistantMessage = {
-            role: 'assistant' as const,
-            content: '',
-            tool_calls: currentToolCalls.map(tc => ({
-              id: tc.id,
-              name: tc.name,
-              arguments: tc.parameters
-            }))
-          }
-          
-          // Build final conversation with the current user message and assistant message included
-          const conversationWithSuccessfulTools = [
-            ...validatedMessages
-          ]
-          
-          // Add current user message if provided (critical for context)
-          if (currentUserMessage) {
-            conversationWithSuccessfulTools.push({
-              role: 'user' as const,
-              content: currentUserMessage,
-              tool_calls: undefined,
-              tool_call_id: undefined
-            })
-          }
-          
-          // Add current assistant message with tool_calls
-          conversationWithSuccessfulTools.push(currentAssistantMessage)
-          
-          console.log('🔍 DEBUG: Messages after validation with current assistant:', conversationWithSuccessfulTools.length)
-          conversationWithSuccessfulTools.forEach((msg, idx) => {
-            console.log(`🔍 AFTER[${idx}]: ${msg.role} - tool_calls: ${msg.tool_calls?.length || 0} - tool_call_id: ${msg.tool_call_id || 'none'}`)
-            if (msg.tool_calls && msg.tool_calls.length > 0) {
-              msg.tool_calls.forEach((tc, tcIdx) => {
-                console.log(`🔍   AFTER_TOOL_CALL[${tcIdx}]: id=${tc.id}, name=${tc.name}`)
-              })
-            }
-          })
-          
-          // Add tool result messages to main store and conversation history
-          console.log('🔍 DEBUG: Adding tool results for successful tools:', successfulToolCalls.length)
-          for (const tc of successfulToolCalls) {
-            if (tc.result) {
-              console.log(`🔍 TOOL_RESULT: Adding tool response for ${tc.name} with tool_call_id: ${tc.id}`)
-              const toolResultContent = extractAndCleanToolContent(tc.result, tc.name)
-              
-              // Add to main message store for future conversation history
-              addMessage({
-                role: 'tool',
-                content: toolResultContent,
-                tool_call_id: tc.id
-              })
-              
-              // Add to current conversation for final LLM call
-              conversationWithSuccessfulTools.push({
-                id: `tool-result-${tc.id}`,
-                role: 'tool' as const,
-                content: toolResultContent,
-                timestamp: new Date(),
-                tool_call_id: tc.id
-              })
-            }
-          }
-          
-          // CRITICAL: Add tool response messages for ALL non-successful tools
-          // to satisfy OpenAI API requirement that every tool_call must have a response
-          const nonSuccessfulToolCalls = currentToolCalls.filter(tc => {
-            // Include any tool that wasn't in the successful list
-            return !successfulToolCalls.some(stc => stc.id === tc.id)
-          })
-          
-          console.log(`📝 Adding error responses for ${nonSuccessfulToolCalls.length} failed/empty tools`)
-          
-          for (const tc of nonSuccessfulToolCalls) {
-            // Determine appropriate error message based on status
-            let errorContent: string
-            
-            if (tc.status === 'error') {
-              // Explicit error occurred
-              errorContent = `Error executing ${tc.name}: ${tc.result || 'Unknown error occurred'}`
-            } else if (tc.status === 'completed') {
-              // Tool completed but had no usable content
-              errorContent = `Tool ${tc.name} completed but returned no usable content`
-            } else {
-              // Tool is still pending or in unknown state (shouldn't happen but handle gracefully)
-              errorContent = `Tool ${tc.name} did not complete successfully (status: ${tc.status})`
-            }
-            
-            // Add to main message store for conversation history persistence
-            addMessage({
-              role: 'tool',
-              content: errorContent,
-              tool_call_id: tc.id
-            })
-            
-            // Add to current conversation for final LLM call
-            conversationWithSuccessfulTools.push({
-              id: `tool-response-${tc.id}`,
-              role: 'tool' as const,
-              content: errorContent,
-              timestamp: new Date(),
-              tool_call_id: tc.id
-            })
-            
-            console.log(`📝 Added error response for tool ${tc.name} (${tc.id}): ${errorContent.substring(0, 50)}...`)
-          }
-          
-          console.log('🔍 DEBUG: Final conversation to be sent to LLM API:', conversationWithSuccessfulTools.length)
-          conversationWithSuccessfulTools.forEach((msg, idx) => {
-            console.log(`🔍 FINAL[${idx}]: ${msg.role} - "${msg.content?.substring(0, 30)}..." - tool_calls: ${msg.tool_calls?.length || 0} - tool_call_id: ${msg.tool_call_id || 'none'}`)
-            if (msg.tool_calls && msg.tool_calls.length > 0) {
-              msg.tool_calls.forEach((tc, tcIdx) => {
-                console.log(`🔍   FINAL_TOOL_CALL[${tcIdx}]: id=${tc.id}, name=${tc.name}`)
-              })
-            }
-          })
-          
-          console.log('📨 Sending tool results to LLM for final response...')
-          console.log('📋 Conversation length:', conversationWithSuccessfulTools.length)
-          
-          const maxAttempts = 3
-          let apiCallAttempts = 0
-          let finalResponse
-          
-          while (apiCallAttempts < maxAttempts) {
-            apiCallAttempts++
-            
-            try {
-              console.log(`📞 API call attempt ${apiCallAttempts}...`)
-              
-              finalResponse = await api.chat({
-                message: "",
-                conversation_history: conversationWithSuccessfulTools,
-                llm_config_id: activeLLMConfig.id,
-                exclude_tools: true  // CRITICAL: Prevent LLM from making more tool calls
-              })
-              
-              console.log('📥 Final LLM response received:', {
-                hasResponse: !!finalResponse.response,
-                responseLength: finalResponse.response?.length || 0,
-                responsePreview: finalResponse.response?.substring(0, 100) + '...',
-                hasToolCalls: !!finalResponse.tool_calls?.length,
-                fullResponse: finalResponse
-              })
-              
-              // Check if LLM incorrectly returned tool calls in final response
-              if (finalResponse.tool_calls && finalResponse.tool_calls.length > 0) {
-                console.error('❌ CRITICAL: LLM returned tool calls in final response despite exclude_tools=true!')
-                console.error('❌ Tool calls returned:', finalResponse.tool_calls)
-                
-                // Force a response without tool calls
-                finalResponse.tool_calls = []
-                if (!finalResponse.response || finalResponse.response.trim() === '') {
-                  finalResponse.response = "I've gathered the information you requested using tools, but I'm having difficulty generating a final response. The tool results should be visible above."
-                }
-              }
-              
-              // Break out of retry loop if successful
-              break
-              
-            } catch (apiError) {
-              console.error(`❌ API call attempt ${apiCallAttempts} failed:`, apiError)
-              
-              if (apiCallAttempts >= maxAttempts) {
-                throw apiError // Re-throw after max attempts
-              }
-              
-              // Wait before retry
-              await new Promise(resolve => setTimeout(resolve, 1000))
-            }
-          }
-
-          console.log('💬 Adding final assistant message to UI...')
-          try {
-            const finalMessageResult = addMessage({
-              role: 'assistant',
-              content: finalResponse.response || "I was able to gather the information using tools, but I'm having trouble generating a response. Please try asking your question again.",
-              tool_calls: []
-            })
-            console.log('✅ Final message added successfully:', finalMessageResult)
-          } catch (addMessageError) {
-            console.error('❌ CRITICAL: Failed to add final message to UI:', addMessageError)
-            toast({
-              title: "Message Display Error",
-              description: "Got a response but couldn't display it. Please try again.",
-              variant: "destructive",
-            })
-          }
-        }
-      } catch (error) {
-        console.error('❌ CRITICAL: Failed to process tool results:', error)
-        
-        try {
-          addMessage({
-            role: 'assistant',
-            content: "I encountered unexpected difficulties while processing your request. Please try again, and if the problem persists, try rephrasing your question.",
-            tool_calls: []
-          })
-        } catch (addError) {
-          console.error('ERROR: Failed to add fallback message:', addError)
-          toast({
-            title: "Critical Error",
-            description: "Unable to process your request. Please refresh the page and try again.",
-            variant: "destructive",
-          })
-        }
-      }
+      
+      // Add fallback error message
+      safeAddMessage({
+        role: 'assistant',
+        content: "I encountered technical difficulties while processing your request. Please try again.",
+        tool_calls: []
+      })
     }
   }
 
@@ -808,18 +422,33 @@ export function ChatInterfaceSimple() {
 
     const userMessage = input.trim()
     setInput('')
-    
-    // Add user message
+
+    // Add user message directly without safe wrapper
     addMessage({
       role: 'user',
       content: userMessage,
     })
 
-    setLoading(true)
+    // Cancel any previous ongoing operations
+    if (currentAbortController.current) {
+      currentAbortController.current.abort()
+    }
+
+    safeSetLoading(true)
+
+    // Ensure minimum loading duration for better UX
+    const loadingStartTime = Date.now()
+    const minLoadingDuration = 800 // minimum 800ms to show animation
+
+    // Create managed AbortController for this chat session
+    const abortController = createManagedAbortController('Chat session controller')
+    const abortSignal = abortController.signal
+    currentAbortController.current = abortController
 
     try {
-      // Prepare conversation history (all messages except the last one)
-      const conversationHistory = messages.map(msg => {
+      // Prepare conversation history with memory management
+      const limitedMessages = limitConversationHistory(messages)
+      const conversationHistory = limitedMessages.map(msg => {
         // Clean tool calls to remove internal execution data
         let cleanedToolCalls = undefined
         if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -839,12 +468,24 @@ export function ChatInterfaceSimple() {
         }
       })
 
+      devLog.conversation('Using conversation history with limits', {
+        limitedCount: conversationHistory.length,
+        originalCount: messages.length
+      })
 
       // Send to backend
-      const response = await api.chat({
-        message: userMessage,
-        conversation_history: conversationHistory,
-        llm_config_id: activeLLMConfig.id
+      const response = await Promise.resolve(
+        api.chat({
+          message: userMessage,
+          conversation_history: conversationHistory,
+          llm_config_id: activeLLMConfig.id
+        }, abortSignal)
+      ).catch(error => {
+        if (!abortSignal?.aborted) {
+          devLog.error(DevLogCategory.API, 'Failed to send message', error)
+          logError('Failed to send message', error)
+        }
+        throw error
       })
 
       // Add assistant response with tool calls
@@ -857,30 +498,36 @@ export function ChatInterfaceSimple() {
 
       const assistantMessage = {
         role: 'assistant' as const,
-        content: response.response,
+        content: response.response || '',
         tool_calls: toolCalls
       }
-      
-      // Add message and get the assigned ID
+
+      // Add message directly without wrapper
       const assistantMessageId = addMessage(assistantMessage)
 
       // Execute tool calls if any
-      if (toolCalls.length > 0) {
-        await executeToolCalls(toolCalls, assistantMessageId, userMessage)
+      if (toolCalls.length > 0 && assistantMessageId) {
+        await executeToolCalls(toolCalls, assistantMessageId, userMessage, abortSignal, 0)
       }
 
     } catch (error) {
-      console.error('ERROR: Critical chat system failure:', error)
+      // Check if the operation was cancelled
+      if (error instanceof Error && error.name === 'AbortError') {
+        devLog.general('Chat operation was cancelled')
+        return
+      }
+
+      devLog.error(DevLogCategory.ERROR_BOUNDARY, 'Critical chat system failure', error)
       
       // Provide user-friendly error message
       try {
-        addMessage({
+        safeAddMessage({
           role: 'assistant',
           content: "I'm sorry, but I encountered a technical issue while processing your message. Please try again, and if the problem continues, try refreshing the page.",
           tool_calls: []
         })
       } catch (addError) {
-        console.error('ERROR: Failed to add error message to chat:', addError)
+        devLog.error(DevLogCategory.ERROR_BOUNDARY, 'Failed to add error message to chat', addError)
       }
       
       toast({
@@ -889,7 +536,20 @@ export function ChatInterfaceSimple() {
         variant: "destructive",
       })
     } finally {
-      setLoading(false)
+      // Clear the AbortController reference when operation completes
+      currentAbortController.current = null
+
+      // Ensure minimum loading duration for better UX
+      const elapsedTime = Date.now() - loadingStartTime
+      const remainingTime = Math.max(0, minLoadingDuration - elapsedTime)
+
+      if (remainingTime > 0) {
+        setTimeout(() => {
+          safeSetLoading(false)
+        }, remainingTime)
+      } else {
+        safeSetLoading(false)
+      }
     }
   }
 
@@ -945,7 +605,7 @@ export function ChatInterfaceSimple() {
                           ol: ({ children }) => <ol className="text-sm space-y-1 ml-4 mb-2 list-decimal">{children}</ol>,
                           li: ({ children }) => <li className="text-sm">{children}</li>,
                           code: ({ children, className }) => {
-                            const isInline = !className;
+                            const isInline = !className || !className.startsWith('language-');
                             return isInline ? (
                               <code className="bg-muted px-1 py-0.5 rounded text-xs font-mono">{children}</code>
                             ) : (
@@ -979,7 +639,6 @@ export function ChatInterfaceSimple() {
               </div>
             ))
           )}
-          
           {/* Loading indicator */}
           {isLoading && (
             <div className="flex justify-start">
@@ -1030,4 +689,4 @@ export function ChatInterfaceSimple() {
       </div>
     </div>
   )
-}
+} 

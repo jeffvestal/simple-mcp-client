@@ -69,7 +69,7 @@ export function ChatInterface() {
       const assistantMessage = {
         role: 'assistant' as const,
         content: response.response,
-        toolCalls: toolCalls
+        tool_calls: toolCalls
       }
       
       // Add message and get the assigned ID
@@ -109,7 +109,7 @@ export function ChatInterface() {
                   : tc
               )
               
-              updateMessage(assistantMessageId, { toolCalls: updatedToolCalls })
+              updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
             } else {
               // Tool not found - update status
               const updatedToolCalls = toolCalls.map(tc => 
@@ -122,7 +122,7 @@ export function ChatInterface() {
                   : tc
               )
               
-              updateMessage(assistantMessageId, { toolCalls: updatedToolCalls })
+              updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
             }
           } catch (error) {
             console.error('Tool execution error:', error)
@@ -138,7 +138,7 @@ export function ChatInterface() {
                 : tc
             )
             
-            updateMessage(assistantMessageId, { toolCalls: updatedToolCalls })
+            updateMessage(assistantMessageId, { tool_calls: updatedToolCalls })
             
             toast({
               title: "Tool Execution Error",

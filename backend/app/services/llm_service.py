@@ -79,17 +79,31 @@ class LLMService:
                 message = {"role": "assistant", "content": content}
                 if tool_calls:
                     # Convert tool calls to OpenAI format
-                    message["tool_calls"] = [
-                        {
-                            "id": tc.get("id"),
-                            "type": "function",
-                            "function": {
-                                "name": tc.get("name"),
-                                "arguments": json.dumps(tc.get("arguments", {}))
-                            }
-                        }
-                        for tc in tool_calls
-                    ]
+                    formatted_tool_calls = []
+                    for tc in tool_calls:
+                        if isinstance(tc, dict):
+                            # Handle both direct format and nested function format
+                            if "function" in tc:
+                                # Frontend format: {id, type, function: {name, arguments}}
+                                formatted_tool_calls.append({
+                                    "id": tc.get("id"),
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc["function"].get("name"),
+                                        "arguments": tc["function"].get("arguments", "{}")
+                                    }
+                                })
+                            else:
+                                # Backend format: {id, name, arguments}
+                                formatted_tool_calls.append({
+                                    "id": tc.get("id"),
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.get("name"),
+                                        "arguments": json.dumps(tc.get("arguments", {}))
+                                    }
+                                })
+                    message["tool_calls"] = formatted_tool_calls
                 openai_messages.append(message)
             else:
                 # Regular user/assistant message

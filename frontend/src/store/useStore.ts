@@ -3,10 +3,11 @@ import { persist } from 'zustand/middleware'
 
 export interface ChatMessage {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'tool'
   content: string
   timestamp: Date
-  toolCalls?: ToolCall[]
+  tool_calls?: ToolCall[]
+  tool_call_id?: string
 }
 
 export interface ToolCall {
@@ -14,7 +15,7 @@ export interface ToolCall {
   name: string
   parameters: Record<string, any>
   result?: any
-  status: 'pending' | 'completed' | 'error'
+  status: 'pending' | 'completed' | 'error' | 'running'
 }
 
 export interface MCPServer {

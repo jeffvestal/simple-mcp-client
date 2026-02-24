@@ -381,6 +381,24 @@ async def chat(request: ChatRequest, db: Database = Depends(get_db)):
         # Generate response
         # Convert conversation history to ChatMessage objects
         chat_messages = []
+        
+        # Inject system prompt if conversation doesn't already have one
+        has_system_message = any(
+            (getattr(msg, 'role', None) or msg.get('role', '')) == 'system'
+            for msg in request.conversation_history
+        )
+        if not has_system_message:
+            chat_messages.append(ChatMessage(
+                role="system",
+                content=(
+                    "You are a helpful assistant with access to MCP tools. "
+                    "Always use your tools to answer user questions — do not guess or describe what a query would look like. "
+                    "When you receive tool results, analyze the data and present a clear, direct answer. "
+                    "Prefer the 'platform_core_search' tool for data questions as it searches and returns results in one step. "
+                    "If the first tool call doesn't fully answer the question, make additional tool calls as needed."
+                )
+            ))
+        
         for msg in request.conversation_history:
             # Handle both dict and ChatMessage objects
             if isinstance(msg, dict):
@@ -477,6 +495,7 @@ async def call_tool(request: ToolCallRequest, db: Database = Depends(get_db)):
         
         if success:
             print(f"[DEBUG] Tool call succeeded on first attempt")
+            print(f"[DEBUG] Tool result content: {str(result_or_error)[:200]}...")
             return ToolCallResponse(success=True, result=result_or_error)
         
         # First attempt failed - check if it's a parameter validation error we can correct
@@ -487,7 +506,7 @@ async def call_tool(request: ToolCallRequest, db: Database = Depends(get_db)):
         if "invalid" in error_message.lower() or "required" in error_message.lower() or "expected" in error_message.lower():
             print(f"[DEBUG] Attempting parameter correction for validation error...")
             
-            correction = mcp_parameter_corrector.analyze_error_and_correct(error_message, request.parameters)
+            correction = mcp_parameter_corrector.analyze_error_and_correct(error_message, request.parameters, request.tool_name)
             
             if correction:
                 print(f"[DEBUG] Parameter correction found: {correction.transformation_applied}")
@@ -498,6 +517,7 @@ async def call_tool(request: ToolCallRequest, db: Database = Depends(get_db)):
                 
                 if retry_success:
                     print(f"[DEBUG] Tool call succeeded after parameter correction!")
+                    print(f"[DEBUG] Tool result content: {str(retry_result_or_error)[:200]}...")
                     return ToolCallResponse(success=True, result=retry_result_or_error)
                 else:
                     print(f"[DEBUG] Tool call still failed after parameter correction: {retry_result_or_error}")

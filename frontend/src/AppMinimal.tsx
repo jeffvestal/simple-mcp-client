@@ -3,13 +3,18 @@ import { useStore } from './store/useStore'
 import { api } from './lib/api'
 import { Button } from './components/ui/button'
 import { Settings, Sun, Moon, MessageCircle } from 'lucide-react'
-import { ChatInterfaceSimple } from './components/ChatInterfaceSimple'
+import { ChatInterfaceWithErrorBoundary } from './components/ChatInterfaceWithErrorBoundary'
 import { SettingsPage } from './components/SettingsPage'
 import { Toaster } from './components/ui/toaster'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { AppErrorFallback } from './components/fallbacks/AppErrorFallback'
+import { SettingsErrorFallback } from './components/fallbacks/SettingsErrorFallback'
+import { logComponentError } from './lib/errorLogger'
+import type { ErrorInfo } from 'react'
 
 type View = 'chat' | 'settings'
 
-function AppMinimal() {
+function AppMinimalCore() {
   const { isDarkMode, toggleTheme, activeLLMConfig, setActiveLLMConfig } = useStore()
   const [currentView, setCurrentView] = useState<View>('chat')
 
@@ -117,17 +122,67 @@ function AppMinimal() {
       <main className="flex-1 overflow-hidden">
         {currentView === 'chat' ? (
           <div className="h-full">
-            <ChatInterfaceSimple />
+            <ChatInterfaceWithErrorBoundary />
           </div>
         ) : (
           <div className="h-full overflow-y-auto">
-            <SettingsPage />
+            <ErrorBoundary
+              fallback={SettingsErrorFallback}
+              onError={(error, errorInfo) => {
+                logComponentError(
+                  'Settings page error',
+                  error,
+                  errorInfo,
+                  { component: 'SettingsPage' }
+                )
+              }}
+              errorBoundaryKey="settings-page"
+            >
+              <SettingsPage />
+            </ErrorBoundary>
           </div>
         )}
       </main>
 
       <Toaster />
     </div>
+  )
+}
+
+// Main App component wrapped with app-level error boundary
+function AppMinimal() {
+  const handleAppError = (error: Error, errorInfo: ErrorInfo) => {
+    logComponentError(
+      'Application-level error boundary triggered',
+      error,
+      errorInfo,
+      {
+        component: 'AppMinimal',
+        severity: 'critical',
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        timestamp: new Date().toISOString()
+      }
+    )
+
+    // Log critical app errors with extra detail
+    console.group('🚨 CRITICAL APPLICATION ERROR')
+    console.error('Error:', error.message)
+    console.error('Stack:', error.stack)
+    console.error('Component Stack:', errorInfo.componentStack)
+    console.error('Location:', window.location.href)
+    console.groupEnd()
+  }
+
+  return (
+    <ErrorBoundary
+      fallback={AppErrorFallback}
+      onError={handleAppError}
+      enableRetry={true}
+      errorBoundaryKey="app-level"
+    >
+      <AppMinimalCore />
+    </ErrorBoundary>
   )
 }
 

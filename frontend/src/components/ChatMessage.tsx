@@ -112,10 +112,10 @@ export function ChatMessage({ message }: ChatMessageProps) {
             </div>
             <p className="text-xs opacity-70 mt-1">{timestamp}</p>
           </div>
-          {message.toolCalls && message.toolCalls.length > 0 && (
+          {message.tool_calls && message.tool_calls.length > 0 && (
             <Card className="p-3 bg-muted/20">
               <div className="space-y-2">
-                {message.toolCalls.map((toolCall) => (
+                {message.tool_calls.map((toolCall) => (
                   <ToolCallDisplay key={toolCall.id} toolCall={toolCall} />
                 ))}
               </div>
