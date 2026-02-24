@@ -517,6 +517,70 @@ export class ToolExecutionService implements IToolExecutionService {
   }
 
   /**
+   * Build a complete conversation history by reading the store and then
+   * patching in any assistant-with-tool_calls or tool-result messages that
+   * were added via safeAddMessage but may not be visible yet because
+   * Zustand batches state updates outside the React render cycle.
+   */
+  private buildFullConversation(
+    currentToolCalls: ToolCall[],
+    processedToolResults: ChatMessage[]
+  ): ChatMessage[] {
+    const storeMessages = this.externalDependencies.messageManager.getMessages()
+    const full: ChatMessage[] = [...storeMessages]
+
+    // Ensure the assistant message that triggered these tool calls is present
+    const currentToolIds = new Set(currentToolCalls.map(tc => tc.id))
+    const hasMatchingAssistant = full.some(m =>
+      m.role === 'assistant' &&
+      m.tool_calls?.some((tc: any) => currentToolIds.has(tc.id))
+    )
+    if (!hasMatchingAssistant) {
+      full.push({
+        role: 'assistant',
+        content: '',
+        tool_calls: currentToolCalls.map(tc => ({
+          id: tc.id,
+          name: tc.name,
+          parameters: tc.parameters,
+        } as any))
+      })
+    }
+
+    // Append successful tool results not yet visible in the store
+    for (const toolResult of processedToolResults) {
+      const alreadyPresent = full.some(
+        m => m.role === 'tool' && m.tool_call_id === toolResult.tool_call_id
+      )
+      if (!alreadyPresent) {
+        full.push(toolResult)
+      }
+    }
+
+    // Append error tool responses not yet visible in the store
+    for (const tc of currentToolCalls.filter(t => t.status === 'error')) {
+      const alreadyPresent = full.some(
+        m => m.role === 'tool' && m.tool_call_id === tc.id
+      )
+      if (!alreadyPresent) {
+        full.push({
+          role: 'tool',
+          content: `Error executing ${tc.name}: ${tc.result || 'Tool execution failed'}`,
+          tool_call_id: tc.id
+        })
+      }
+    }
+
+    devLog.conversation('Built full conversation for LLM', {
+      storeCount: storeMessages.length,
+      fullCount: full.length,
+      patchedMessages: full.length - storeMessages.length
+    })
+
+    return full
+  }
+
+  /**
    * Handle successful tool execution with iterative multi-round tool loop.
    * After processing tool results, sends them back to the LLM with tools ENABLED.
    * If the LLM requests more tools, executes them and loops. Stops when the LLM
@@ -536,7 +600,9 @@ export class ToolExecutionService implements IToolExecutionService {
 
       devLog.conversation('Tool iteration loop', { iteration, maxIterations: this.MAX_TOOL_ITERATIONS })
 
-      // Step 1: Process the tool results from the current round
+      // Step 1: Process the tool results from the current round.
+      // This adds tool messages to the store via safeAddMessage, but Zustand
+      // state updates are batched and NOT synchronously visible to getMessages().
       const processedResults = await this.processToolResults(currentToolCalls, context)
 
       if (!processedResults.hasValidResults && iteration === 0) {
@@ -549,18 +615,22 @@ export class ToolExecutionService implements IToolExecutionService {
         return
       }
 
-      // Step 2: Send conversation back to LLM with tools ENABLED
+      // Step 2: Build the full conversation by patching in any tool results
+      // that the store may not reflect yet, then send to LLM with tools ENABLED.
       const llmConfigId = this.externalDependencies.llmConfigManager.getActiveLLMConfig()!.id
-      const conversationHistory = this.externalDependencies.messageManager.getMessages()
+      const fullConversation = this.buildFullConversation(
+        currentToolCalls,
+        processedResults.toolResults
+      )
 
       devLog.conversation('Sending tool results to LLM with tools enabled', {
         iteration,
-        historyLength: conversationHistory.length,
+        historyLength: fullConversation.length,
         processedCount: processedResults.processedCount
       })
 
       const llmResponse = await this.sendConversationToLLM(
-        conversationHistory,
+        fullConversation,
         llmConfigId,
         false, // tools enabled
         context.abortSignal
@@ -649,7 +719,9 @@ export class ToolExecutionService implements IToolExecutionService {
         }
       }
 
-      // Update for next iteration
+      // Update for next iteration -- processToolResults at the top of the loop
+      // will handle adding these results, and buildFullConversation will patch
+      // them in if the store hasn't caught up.
       currentToolCalls = formattedNewToolCalls
       context.toolCalls = formattedNewToolCalls
       context.assistantMessageId = newAssistantMessageId
@@ -660,12 +732,16 @@ export class ToolExecutionService implements IToolExecutionService {
       maxIterations: this.MAX_TOOL_ITERATIONS
     })
 
-    // One final attempt to get a summary with tools disabled
-    const conversationHistory = this.externalDependencies.messageManager.getMessages()
+    // One final attempt to get a summary with tools disabled.
+    // Use buildFullConversation to ensure all tool results are present.
+    const fallbackConversation = this.buildFullConversation(
+      currentToolCalls,
+      [] // processToolResults already ran for these at the top of the last iteration
+    )
     const llmConfigId = this.externalDependencies.llmConfigManager.getActiveLLMConfig()!.id
 
     const fallbackResponse = await this.sendConversationToLLM(
-      conversationHistory,
+      fallbackConversation,
       llmConfigId,
       true, // exclude tools to force a text answer
       context.abortSignal
